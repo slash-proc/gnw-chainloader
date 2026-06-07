@@ -2,6 +2,11 @@
 
 The **gnw-chainloader** is a bare-metal storage management, partition inspection, and multi-boot utility for the Game & Watch handheld. Located at `slash-proc/gnw-chainloader`, the project's primary goals are to establish an inviolable, stable boot path (guaranteeing the system always boots safely) and to provide a robust framework for memory and storage oversight. By leveraging a hardware bank-swapping technique and an extensible dynamic module plugin system, it enables a stable triple-boot configuration for users who possess legal copies of both official Nintendo firmware (OFW) binaries and Retro-Go, while allowing optional features (such as file browsers and audio players) to load dynamically from RAM.
 
+
+![gnw-chainloader UI Carousel](screenshots/carousel.gif)
+
+An overview of the user interface and features is available in the **[Screenshots directory](screenshots/)**.
+
 ---
 
 ## Getting Started
