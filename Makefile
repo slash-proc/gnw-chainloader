@@ -158,11 +158,6 @@ $(APP_BUILD_DIR)/%.o: %.c src/chainloader/assets_gen.h | $(APP_BUILD_DIR)
 	@echo "CC $< (app)"
 	@$(CC) -c $(CFLAGS) -ffixed-r9 -DVECT_TAB_SRAM $< -o $@
 
-# ofw_verify.c bakes in the committed CRC headers. There are no header depfiles, so name them
-# explicitly: a re-baked CRC (make ofw-crc / retrogo-crc) must rebuild this object, or the binary
-# ships a stale CRC and the OFW/Retro-Go gates misfire. (Merges with the pattern rule above.)
-$(APP_BUILD_DIR)/src/chainloader/system/ofw_verify.o: src/common/ofw_crc.h src/common/retrogo_crc.h
-
 $(APP_BUILD_DIR)/%.o: %.s | $(APP_BUILD_DIR)
 	@mkdir -p $(dir $@)
 	@echo "AS $< (app)"
@@ -684,16 +679,11 @@ $(I18N_OUT):
 # /i18n/fonts/<script>.fnt), one chained gnwmanager session — the dev shortcut. For
 # the real user flow, copy build/i18n/ onto an SD card's /i18n/ and let the device
 # install them. Run after `make i18n` with the device attached.
-ifeq ($(DOCKER),1)
-push-i18n:
-	$(IN_DOCKER)
-else
 push-i18n: i18n
 	@LFS_SIZE=$(LFS_SIZE) python3 scripts/build/push_batched.py \
 	    $(foreach f,$(wildcard $(I18N_OUT)/fonts/*.fnt),/i18n/fonts/$(notdir $(f))=$(f)) \
 	    $(foreach f,$(wildcard $(I18N_OUT)/*.lang),/i18n/$(notdir $(f))=$(f))
 	-$(RESTORE_KEYSTONE)
-endif
 
 .PHONY: all clean test-host i18n i18n-corefont push-i18n
 
