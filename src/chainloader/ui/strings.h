@@ -167,6 +167,9 @@ typedef enum {
     STR_FOOTER_PICKER,       /* "PAUSE: ADD FOLDER   A: PICK" (file-picker mode) */
     STR_SD_ADDR,             /* "SD" (synthetic SD partition has no real address) */
 
+    /* Appended (ABI: append-only before STR_COUNT, no version bump) */
+    STR_DETAIL_ROM_CACHE,    /* "ROM Cache" (Retro-Go's raw ROM/save cache region) */
+
     STR_COUNT
 } string_id_t;
 

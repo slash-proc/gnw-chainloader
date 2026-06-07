@@ -34,4 +34,15 @@ bool ofw_verify_by_spi(uint32_t spi_offset);
 typedef enum { OFW_VERIFY_NA, OFW_VERIFY_OK, OFW_VERIFY_BAD } ofw_verify_status_t;
 ofw_verify_status_t ofw_verify_addr(uint32_t addr);
 
+/* Retro-Go launcher integrity (boot-time gate, the analogue of the OFW gate).
+ * retrogo_crc_ok() re-checks the baked CRC of the Bank-1 Retro-Go payload
+ * (src/common/retrogo_crc.h) with the HW CRC unit; retrogo_bootable() ANDs that
+ * with board_is_valid_app(RETROGO_BASE). A partial/corrupt flash fails, so the
+ * chainloader falls back to its own menu instead of jumping into an unbootable
+ * launcher (STABILITY IS LAW). Fails OPEN when RETROGO_CRC_LEN is 0 (header not
+ * baked) so a tree without a regenerated header is never bricked. The inviolable
+ * Retro-Go "Return to Main Menu" (CORE/RESET) re-launch is intentionally NOT gated. */
+bool retrogo_crc_ok(void);
+bool retrogo_bootable(void);
+
 #endif /* SYSTEM_OFW_VERIFY_H */

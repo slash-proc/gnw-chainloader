@@ -105,5 +105,9 @@
   "STR_PHASE_EXT_FLASH": "فلاش خارجي",
   "STR_FOOTER_PICKER": "Pause: إضافة مجلد   A: اختيار",
   "STR_SD_ADDR": "SD",
-  "_adopted": ["STR_DETAIL_CHAINLOADER", "STR_SD_ADDR"]
+  "STR_DETAIL_ROM_CACHE": "ROM Cache",
+  "_adopted": [
+    "STR_DETAIL_CHAINLOADER",
+    "STR_SD_ADDR"
+  ]
 }

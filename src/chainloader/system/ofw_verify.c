@@ -1,7 +1,9 @@
 #include "ofw_verify.h"
 #include "stm32h7xx.h"
+#include "board.h"
 #include "../../common/memory_map.h"
 #include "../../common/ofw_crc.h"
+#include "../../common/retrogo_crc.h"
 
 /* Detected external-flash size in bytes (storage/partition.c). Used to bound every
  * CRC read so a stale record / smaller chip can never read past the mapped region. */
@@ -23,6 +25,22 @@ uint32_t ofw_crc32(const void *addr, uint32_t len) {
         CRC->DR = *p++;
     }
     return CRC->DR;
+}
+
+bool retrogo_crc_ok(void) {
+#if !defined(RETROGO_CRC_LEN) || (RETROGO_CRC_LEN == 0)
+    return true;                         /* header not baked -> fail open (never brick) */
+#else
+    uint32_t len = (uint32_t)RETROGO_CRC_LEN;
+    /* Defensive bound: never CRC past the end of Bank 1 (len is baked-correct, but a
+     * stale/implausible value must not over-read). Fail open if it doesn't fit. */
+    if (len == 0 || len > ((256u * 1024u) - (RETROGO_BASE - CHAINLOADER_BASE))) return true;
+    return ofw_crc32((const void *)RETROGO_BASE, len) == (uint32_t)RETROGO_CRC;
+#endif
+}
+
+bool retrogo_bootable(void) {
+    return board_is_valid_app(RETROGO_BASE) && retrogo_crc_ok();
 }
 
 static const ofw_crc_record_t *lookup_spi(uint32_t spi_offset) {

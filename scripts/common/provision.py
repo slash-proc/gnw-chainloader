@@ -35,7 +35,7 @@ if __package__ in (None, ""):                     # allow `python3 provision.py`
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "common"
 
-from . import REPO_ROOT, resolve
+from . import REPO_ROOT, resolve, lfs_gnwmanager_offset
 from . import harness as h
 from . import observe
 from . import envprobe
@@ -207,7 +207,7 @@ class Provisioner:
             gnw = GnW(backend)
             with h.time_budget(120.0, "start_gnwmanager"):
                 gnw.start_gnwmanager()
-            fs = get_filesystem(gnw, offset=0)
+            fs = get_filesystem(gnw, offset=lfs_gnwmanager_offset(gnw.external_flash_size))
             files = []
             for top in tops:
                 for root, _dirs, fnames in envprobe._safe_walk(fs, top):

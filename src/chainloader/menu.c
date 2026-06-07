@@ -21,6 +21,7 @@
 #include "system/installer.h"
 #include "system/module.h"
 #include "system/feature.h"
+#include "system/ofw_verify.h"   /* retrogo_bootable (Retro-Go boot-time CRC gate) */
 
 #ifdef ABI_SELFTEST
 /* On-device ABI-gate self-test (scripts/tests/test_abi_reject.py). Compiled in
@@ -81,7 +82,7 @@ static bool ofw_bootable(board_console_type_t c) {
  * bootable when active in Bank 2 or restorable from an external-flash backup. */
 static bool target_bootable(boot_target_t t) {
     switch (t) {
-        case BT_RETROGO: return board_is_valid_app(RETROGO_BASE);
+        case BT_RETROGO: return retrogo_bootable();
         case BT_MARIO:   return ofw_bootable(CONSOLE_MARIO);
         case BT_ZELDA:   return ofw_bootable(CONSOLE_ZELDA);
         default:         return false;

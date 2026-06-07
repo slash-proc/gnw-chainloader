@@ -105,5 +105,10 @@
   "STR_PHASE_EXT_FLASH": "外部闪存",
   "STR_FOOTER_PICKER": "Pause: 添加文件夹   A: 选择",
   "STR_SD_ADDR": "SD",
-  "_adopted": ["STR_DECIMAL_SEP", "STR_DETAIL_CHAINLOADER", "STR_SD_ADDR"]
+  "STR_DETAIL_ROM_CACHE": "ROM Cache",
+  "_adopted": [
+    "STR_DECIMAL_SEP",
+    "STR_DETAIL_CHAINLOADER",
+    "STR_SD_ADDR"
+  ]
 }

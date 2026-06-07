@@ -105,5 +105,10 @@
   "STR_PHASE_EXT_FLASH": "外部快閃",
   "STR_FOOTER_PICKER": "Pause: 加入資料夾   A: 選擇",
   "STR_SD_ADDR": "SD",
-  "_adopted": ["STR_DECIMAL_SEP", "STR_DETAIL_CHAINLOADER", "STR_SD_ADDR"]
+  "STR_DETAIL_ROM_CACHE": "ROM Cache",
+  "_adopted": [
+    "STR_DECIMAL_SEP",
+    "STR_DETAIL_CHAINLOADER",
+    "STR_SD_ADDR"
+  ]
 }

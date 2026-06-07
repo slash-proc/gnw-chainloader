@@ -92,6 +92,12 @@ bool partition_is_sd(const partition_info_t *p);
 const char *partition_fs_code(const partition_info_t *p);
 /* Registered vfs_driver name for the type: "LFS" / "FAT" / "FROGFS", or NULL. */
 const char *partition_driver_name(const partition_info_t *p);
+/* Scan a Retro-Go internal-flash image for its version banner ("Retro-Go SD v...").
+ * Returns a pointer to the NUL-terminated version token ("v1.3.1-84-g905d6615")
+ * inside the memory-mapped image, or NULL if absent. Version-proof identity marker:
+ * the banner literal moves with every build, so we scan for it rather than test a
+ * fixed offset (the old 0x400 "01 00 00 00" probe was generic and went stale). */
+const char *partition_retrogo_version(uint32_t addr, uint32_t size);
 void update_progress_ui(int pct, const char *title, const char *status);
 extern uint32_t    total_ext_flash_size;
 extern string_id_t partition_current_phase;  /* updated during scan; tr()'d on the progress screen */

@@ -14,4 +14,9 @@ ofw-crc:
 	@echo "Generating baked OFW CRC signatures from patched artifacts..."
 	python3 scripts/build/gen_ofw_crc.py
 
-.PHONY: patch patch-mario patch-zelda ofw-crc
+# Bake the Retro-Go internal-flash CRC (boot-time integrity gate). Run after build-rg-sd.
+retrogo-crc:
+	@echo "Generating baked Retro-Go CRC from retro-go-sd/build/gw_retro_go_intflash.bin..."
+	python3 scripts/build/gen_retrogo_crc.py
+
+.PHONY: patch patch-mario patch-zelda ofw-crc retrogo-crc

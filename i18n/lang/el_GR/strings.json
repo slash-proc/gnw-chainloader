@@ -105,5 +105,10 @@
   "STR_PHASE_EXT_FLASH": "Εξωτ. flash",
   "STR_FOOTER_PICKER": "Pause: Προσθήκη φακέλου   A: ΟΚ",
   "STR_SD_ADDR": "SD",
-  "_adopted": ["STR_TYPE_FIRMWARE", "STR_DETAIL_CHAINLOADER", "STR_SD_ADDR"]
+  "STR_DETAIL_ROM_CACHE": "ROM Cache",
+  "_adopted": [
+    "STR_TYPE_FIRMWARE",
+    "STR_DETAIL_CHAINLOADER",
+    "STR_SD_ADDR"
+  ]
 }

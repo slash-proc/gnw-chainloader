@@ -105,5 +105,10 @@
   "STR_PHASE_EXT_FLASH": "Flash esterna",
   "STR_FOOTER_PICKER": "Pause: Aggiungi cartella   A: Scegli",
   "STR_SD_ADDR": "SD",
-  "_adopted": ["STR_DETAIL_CHAINLOADER", "STR_TYPE_FIRMWARE", "STR_SD_ADDR"]
+  "STR_DETAIL_ROM_CACHE": "ROM Cache",
+  "_adopted": [
+    "STR_DETAIL_CHAINLOADER",
+    "STR_TYPE_FIRMWARE",
+    "STR_SD_ADDR"
+  ]
 }

@@ -152,6 +152,20 @@ The sizes that are fixed regardless of flash capacity are: Zelda External Asset 
 
 The LittleFS partition serves as the chainloader's **read-write filesystem**: it holds user-defined themes (`/themes/*.bin`), persistent configuration, and any other chainloader-owned data. Theme binaries are described in §11.
 
+**SD layout: bounded LittleFS + the Retro-Go ROM cache.** `src/common/memory_map.h` is the single source of truth for these offsets. The SD-variant external flash is laid out, bottom to top:
+
+| Offset | Region |
+| :--- | :--- |
+| `0x000000` | Zelda / Mario asset blocks |
+| `0x500000` / `0x520000` | Zelda / Mario OFW backups (128 KiB each) |
+| `0x540000` | FAT module store (`MODULE_FAT_OFFSET`) |
+| `0xA00000` | **LittleFS** — `MODULE_LFS_SIZE` (10 MiB default, set by `Makefile.common` `LFS_SIZE`), butted against the FAT store (`MODULE_LFS_OFFSET_SD`) |
+| `0x1400000` | **Retro-Go ROM cache** — raw ROM/save circular cache, fills to end of chip (`RETROGO_CACHE_OFFSET`) |
+
+In the SD-card Retro-Go build the *firmware itself* never mounts the external-flash LittleFS (saves/config/screenshots go to the SD card); the chainloader owns it (themes, `/i18n` language packs + fonts, feature modules, the RW FS drivers). Launching a game copies the ROM from the SD card into the raw ROM-cache region via a round-robin allocator (`retro-go-sd/Core/Src/gw_flash_alloc.c`).
+
+The cache must never write below `RETROGO_CACHE_OFFSET`, or it would erase the LittleFS, the OFW backups, and the FAT store (none of which Retro-Go knows about). The chainloader passes `RETROGO_CACHE_OFFSET` to the Retro-Go build as `EXTFLASH_OFFSET`; the allocator keeps its writes above the **larger** of that (exposed to C as `__EXTFLASH_OFFSET__`) and `get_ofw_extflash_size()` (the active OFW's own footprint). The LittleFS sits *inside* this reservation, so the cache needs only a lower bound — no upper bound (the upstreamable Retro-Go change is simply "respect `EXTFLASH_OFFSET`"). The LittleFS is stored inverted (superblock at the top of its region); the Partition Viewer validates it at the fixed `0xA00000..0x1400000` span, registers a labeled `Retro-Go Cache` region above it, and skips the cache during the sweep (raw ROM bytes can false-match FS magics). Host LFS tools reach the relocated LittleFS via `lfs_gnwmanager_offset()` (`scripts/common/__init__.py`), which converts `RETROGO_CACHE_OFFSET` to the end-anchored offset gnwmanager expects.
+
 The Partition Viewer architecture supports:
 - **Non-Blocking Background Scanning:** A state machine performs incremental scan steps at startup without impacting menu responsiveness.
 - **Anchored Signature Detection:** Partitions are identified via unique data patterns at known internal offsets (e.g. 'CORE' for Retro-Go, 'ZELDA' NES headers).
@@ -413,6 +427,82 @@ Device control and inspection run through the scripts in `scripts/debug/`; the c
 - [scripts/debug/remote_control.py](scripts/debug/remote_control.py) — drive the on-device UI from your keyboard (or a real gamepad, via evdev) over the debug probe, CPU running. A thin front-end over the shared backend `scripts/common/remote_input.py`, which writes a button bitmask to the remote-input shadow cell (`0x2001FFF4`) that the firmware OR's into its live button state — so a keystroke is identical to a physical press (auto-repeat included). Lets a session navigate the menu, open the file browser, and trigger the Left+Game escape with no keyboard emulator or hardware mod. **Uses the `REMOTE_INPUT` hook, which is now compiled in by default** (opt out with `make REMOTE_INPUT=0`). See §10.1.
 
 **Reset / run after flashing:** `gnwmanager start bank1` starts the flashed chainloader; `python scripts/debug/bank.py unswap` unswaps the banks and resets. Prefer these over `gnwmanager info`, which is a last-resort connection-debug fallback.
+
+### 10.2 memory.py Usage & Reference
+
+The `memory.py` script ([scripts/debug/memory.py](file:///home/doug/Nerd/git/gnw-chainloader/scripts/debug/memory.py)) is a versatile diagnostic utility for inspecting and modifying memory-mapped registers, SRAM, internal flash, and external flash (OSPI) on the STM32H7B0 target.
+
+By default, the script halts the CPU before executing any subcommands and resumes it afterward. You can bypass this behavior with the `--no-halt` option to inspect a running target.
+
+#### Address Math
+All address arguments accept basic math expressions containing hex/decimal values and operators (`+`, `-`). This allows offsets to be specified directly relative to base addresses or symbols (e.g., resolving a symbol address from `arm-none-eabi-nm` and adding an offset):
+```bash
+python scripts/debug/memory.py read 0x0811AE70+0x301A5 8
+```
+
+#### Subcommands
+
+##### 1. `read <address> <size> [count]`
+Reads memory at the specified address.
+- `size`: Access width in bits (`8`, `16`, `32`) or raw `bytes`.
+- `count`: Number of elements to read (defaults to `1`).
+- **Examples**:
+  - Read a 32-bit CPU/MCU register (e.g., `RCC->RSR` reset status register at `0x580244D0`):
+    ```bash
+    python scripts/debug/memory.py read 0x580244D0 32
+    ```
+  - Read the SRAM magic boot intent cell at `0x2001FFF8`:
+    ```bash
+    python scripts/debug/memory.py read 0x2001FFF8 32
+    ```
+  - Read raw bytes (e.g., 16 bytes starting at `0x24000000`):
+    ```bash
+    python scripts/debug/memory.py read 0x24000000 bytes 16
+    ```
+
+##### 2. `write <address> <size> <value>`
+Writes a value or byte pattern to the target memory or register.
+- `size`: Access width in bits (`8`, `16`, `32`) or raw `bytes`.
+- `value`: Hex/decimal integer value, or space-separated hex bytes string (when size is `bytes`).
+- **Examples**:
+  - Write a 32-bit button mask to the remote-input shadow cell at `0x2001FFF4`:
+    ```bash
+    python scripts/debug/memory.py write 0x2001FFF4 32 0x10
+    ```
+  - Write raw bytes:
+    ```bash
+    python scripts/debug/memory.py write 0x24000000 bytes "AA BB CC DD"
+    ```
+
+##### 3. `dump <address> <length> <file>`
+Dumps a contiguous memory region of `length` bytes to a local file. Reads are executed in 64 KiB chunks to avoid OpenOCD timeouts.
+- **Example**:
+  - Dump the 1 MiB Bank 1 internal flash to a local file:
+    ```bash
+    python scripts/debug/memory.py dump 0x08000000 0x100000 build/bank1_dump.bin
+    ```
+
+##### 4. `compare <address> <file> [--length <length>]`
+Compares the target's memory starting at `address` against the contents of a local file. Reports byte mismatches (up to the first 20 differences).
+- **Example**:
+  - Compare Bank 1 flash against a local compiled chainloader binary:
+    ```bash
+    python scripts/debug/memory.py compare 0x08000000 build/gnw_chainloader.bin
+    ```
+
+##### 5. `search <start> <end> [pattern] [--ospi]`
+Searches a memory range (aligned to 4-byte boundaries) for either a specific byte pattern or external flash (OSPI) pointers.
+- `pattern`: Hex value or bytes string to search for (e.g., `AABB` or `0x12345678`).
+- `--ospi`: Scans for any 32-bit words that fall within the external flash memory-mapped range (`[0x90000000, 0x94000000)`).
+- **Examples**:
+  - Search for references to the SRAM magic cell:
+    ```bash
+    python scripts/debug/memory.py search 0x24000000 0x24040000 0x2001FFF8
+    ```
+  - Scan memory for OSPI pointers:
+    ```bash
+    python scripts/debug/memory.py search 0x24000000 0x24040000 --ospi
+    ```
 
 ### Live-state debugging playbook
 

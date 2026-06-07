@@ -31,22 +31,34 @@
 #define ZELDA_SPI_OFFSET               0x00500000UL  /* Zelda OFW backup: right after the Mario asset block */
 #define MARIO_SPI_OFFSET               0x00520000UL  /* Mario OFW backup: right after the Zelda backup */
 
-/* Fast-path probe hints for the Retro-Go LittleFS (the chainloader's
- * themes/config module source), used at boot before the exhaustive partition
- * scan and validated by the on-flash superblock magic — a wrong/absent guess
- * finds nothing and falls through to the full scan (never assumed correct, same
- * philosophy as the DEFAULT_* hints above).
+/* Probe hints for the Retro-Go LittleFS (the chainloader's themes/config/i18n
+ * module source), validated by the on-flash superblock magic (a wrong/absent
+ * guess finds nothing and falls through to the full scan).
  *
- * IMPORTANT: this LittleFS is stored INVERTED — its superblock lives in the LAST
- * block(s) of flash, and the nominal partition start reads erased (0xFF). So the
- * boot probe leads with the END of flash (last MODULE_LFS_END_WINDOW bytes); the
- * partition scanner back-computes the real start from there. The two start
- * offsets below are kept only as fallbacks for a hypothetical NON-inverted image
- * at the standard patcher layouts (DESIGN.md §2): SD-card variant (no FrogFS) at
- * 10 MiB (after the FAT module store), full 64 MB layout (after FrogFS) at 56 MiB. */
-#define MODULE_LFS_END_WINDOW          0x00010000UL  /* 64 KiB end-of-flash window (inverted superblock) */
-#define MODULE_LFS_OFFSET_SD           0x00A00000UL  /* 10 MiB: SD-card variant start (after the FAT store); == RG_EXTFLASH_OFFSET */
-#define MODULE_LFS_OFFSET_FLASH        0x03800000UL  /* 56 MiB: full 64 MB layout start (non-inverted fallback) */
+ * SD layout (this device): the LittleFS is a FIXED MODULE_LFS_SIZE block butted
+ * directly against the FAT module store, occupying
+ *   [MODULE_LFS_OFFSET_SD, RETROGO_CACHE_OFFSET) = [0xA00000, 0x1400000).
+ * Everything above it (RETROGO_CACHE_OFFSET .. end of chip) is Retro-Go's raw
+ * ROM/save circular cache (retro-go-sd gw_flash_alloc.c). RETROGO_CACHE_OFFSET is
+ * passed to the Retro-Go build as its EXTFLASH_OFFSET lower bound, so the cache
+ * never writes into the LittleFS or the reserved bottom regions (assets, OFW
+ * backups, FAT store). The Partition Viewer registers the cache at this fixed
+ * span and excludes it from the sweep (raw ROM bytes can false-match FS magics).
+ * See DESIGN.md §2.
+ *
+ * IMPORTANT: the LittleFS is stored INVERTED — its superblock lives in the LAST
+ * block(s) of its partition (the top, just below RETROGO_CACHE_OFFSET), and the
+ * partition start reads erased (0xFF). The scanner validates the superblock in the
+ * top MODULE_LFS_END_WINDOW bytes of the LFS region and registers it at the fixed
+ * base. MODULE_LFS_OFFSET_FLASH is kept as a fallback for the legacy non-SD
+ * full-flash (FrogFS) layout, where LittleFS sits at 56 MiB. */
+#define MODULE_LFS_END_WINDOW          0x00010000UL  /* 64 KiB window holding the inverted superblock (top of the LFS region) */
+#define MODULE_LFS_OFFSET_SD           0x00A00000UL  /* SD layout: LittleFS start, right after the FAT module store */
+#ifndef MODULE_LFS_SIZE  /* overridable from the build: Makefile.common LFS_SIZE -> -DMODULE_LFS_SIZE */
+#define MODULE_LFS_SIZE                (10U * 1024U * 1024U) /* SD layout: LittleFS size (10 MiB default) */
+#endif
+#define RETROGO_CACHE_OFFSET           (MODULE_LFS_OFFSET_SD + MODULE_LFS_SIZE) /* 0x1400000: start of Retro-Go's ROM cache; == RG_EXTFLASH_OFFSET */
+#define MODULE_LFS_OFFSET_FLASH        0x03800000UL  /* 56 MiB: legacy non-SD (FrogFS) full-flash LittleFS start */
 
 /* --- Module store FAT partition (Stage 3 of the tiered module-memory design) ---
  * A FAT partition holding loadable module .bin files and the full RW filesystem drivers

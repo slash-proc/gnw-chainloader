@@ -64,6 +64,12 @@ static struct {
  * if the probe missed (unusual offset / smaller chip). */
 static bool g_modules_ready = false;
 
+/* Upper bound (extflash offset) of the external-flash partition sweep. On the fixed
+ * SD layout the region above RETROGO_CACHE_OFFSET is Retro-Go's raw ROM cache
+ * (registered as a single labeled partition); the sweep stops there since raw ROM
+ * bytes can false-match FS magics. Set in partition_scan_start; full chip otherwise. */
+static uint32_t g_ext_scan_off_end = 0;
+
 bool partition_modules_ready(void) { return g_modules_ready; }
 
 partition_scan_state_t partition_scan_get_state(void) {
@@ -208,7 +214,9 @@ static const sig_probe_t STATIC_PROBES[] = {
     {"Mario",    STR_DETAIL_ASSETS,     1*1024*1024, 0,       (const uint8_t*)"\x78\xD8\xA9\x10", 4},
     {"Mario",    STR_DETAIL_OFW_BACKUP, 128*1024,    4,       (const uint8_t*)"\x01\x81\x01\x08", 4},
     {"Zelda",    STR_DETAIL_OFW_BACKUP, 128*1024,    4,       (const uint8_t*)"\xE1\xB3\x01\x08", 4},
-    {"Retro-Go", STR_DETAIL_APP_BIN,    0,           0x400,   (const uint8_t*)"\x01\x00\x00\x00", 4},
+    /* Retro-Go is NOT probed here: its base (RETROGO_BASE) is off the 16 KiB scan
+     * grid and a fixed-offset signature is fragile. It is registered deterministically
+     * by probe_retrogo() below, keyed off the version banner. */
 };
 
 static void check_address(uint32_t addr) {
@@ -239,20 +247,6 @@ static void check_address(uint32_t addr) {
                 const char *type = p->type;
                 string_id_t detail_id = p->detail_id;
 
-                if (size == 0) {
-                    if (strcmp(type, "Retro-Go") == 0) {
-                        size = 16 * 1024;
-                        while (addr + size + 16384 <= bank_end) {
-                            const uint32_t *chunk = (const uint32_t *)(addr + size);
-                            bool is_empty = true;
-                            for (int j = 0; j < 1024; j++) {
-                                if (chunk[j] != 0xFFFFFFFF) { is_empty = false; break; }
-                            }
-                            if (is_empty) break;
-                            size += 16384;
-                        }
-                    }
-                }
                 if (addr + size <= bank_end) {
                     if (is_internal && detail_id == STR_DETAIL_OFW_BACKUP) {
                         detail_id = STR_DETAIL_APP_BIN;
@@ -266,7 +260,10 @@ static void check_address(uint32_t addr) {
 
     if (is_internal && board_is_valid_app(addr)) {
         if (addr == BANK1_BASE) {
-            add_partition(addr, 0x8000, "Chainloader", STR_DETAIL_CHAINLOADER, 0);
+            /* Chainloader occupies Bank 1 up to the Retro-Go payload base; derive the
+             * size from the define so it tracks the ceiling (was a stale 0x8000/32 KiB
+             * literal after the 32K->40K raise). */
+            add_partition(addr, RETROGO_BASE - BANK1_BASE, "Chainloader", STR_DETAIL_CHAINLOADER, 0);
         } else {
             add_partition(addr, 128*1024, identify_firmware(addr), STR_DETAIL_APP_BIN, 0);
         }
@@ -323,14 +320,68 @@ static void check_address(uint32_t addr) {
     }
 }
 
+const char *partition_retrogo_version(uint32_t addr, uint32_t size) {
+    static const char sig[] = "Retro-Go SD v";
+    const uint32_t siglen = sizeof(sig) - 1;   /* 13 bytes, excludes NUL */
+    if (size < siglen) return NULL;
+    const char *base = (const char *)addr;
+    for (uint32_t i = 0; i + siglen <= size; i++) {
+        if (base[i] == 'R' && memcmp(base + i, sig, siglen) == 0)
+            return base + i + (siglen - 1);   /* the "v..." token, NUL-terminated in flash */
+    }
+    return NULL;
+}
+
+/* Register the Retro-Go launcher payload at its fixed base (RETROGO_BASE) when its
+ * version banner is present. Deterministic (the base is a build-time constant, not a
+ * scan-grid hit) and version-proof (matches the moving banner, not a stale fixed
+ * offset). Retro-Go is always the last occupant of Bank 1, so it owns everything from
+ * its base to the end of the bank (no grow-scan; that left an 8 KiB tail gap). */
+static void probe_retrogo(void) {
+    uint32_t base = RETROGO_BASE;
+    uint32_t bank_end = BANK1_BASE + BANK_SIZE;
+    if (base >= bank_end || is_covered(base)) return;
+    if (!partition_retrogo_version(base, bank_end - base)) return;
+    add_partition(base, bank_end - base, "Retro-Go", STR_DETAIL_APP_BIN, 0);
+}
+
+/* Fixed SD layout: the module-source LittleFS is a bounded partition butted directly
+ * against the FAT store, occupying [MODULE_LFS_OFFSET_SD, RETROGO_CACHE_OFFSET). It is
+ * stored INVERTED, so its superblock sits in the TOP block(s) of the region (just below
+ * RETROGO_CACHE_OFFSET), not at the (erased) start — the generic grid sweep would miss
+ * it. Validate that superblock and register the partition at its back-computed start
+ * (size + block_count come from the superblock so the mount geometry is exact). Caller
+ * guarantees total_ext_flash_size >= RETROGO_CACHE_OFFSET. */
+static void probe_fixed_sd_lfs(void) {
+    uint32_t region_end = EXT_FLASH_BASE + RETROGO_CACHE_OFFSET;   /* LFS top == ROM-cache base */
+    for (uint32_t a = region_end - MODULE_LFS_END_WINDOW; a + 32 <= region_end; a += 4096) {
+        const uint8_t *blk = (const uint8_t *)a;
+        if (memcmp(&blk[8], "littlefs", 8) != 0) continue;
+        uint32_t version     = blk[20] | (blk[21] << 8) | (blk[22] << 16) | (blk[23] << 24);
+        uint32_t block_size  = blk[24] | (blk[25] << 8) | (blk[26] << 16) | (blk[27] << 24);
+        uint32_t block_count = blk[28] | (blk[29] << 8) | (blk[30] << 16) | (blk[31] << 24);
+        if ((version >> 16) != 2 || block_size < 128 || block_size > 8192 || block_count == 0) continue;
+        uint32_t size = block_size * block_count;          /* inverted: FS grows down from region_end */
+        uint32_t phys_start = region_end - size;
+        if (phys_start >= EXT_FLASH_BASE + MODULE_LFS_OFFSET_SD) {
+            add_partition(phys_start, size, "LittleFS", STR_LFS_BLOCKS, block_count);
+            return;
+        }
+    }
+}
+
 void partition_scan_start(void) {
     partition_count = 0;
     total_ext_flash_size = board_ospi_get_size();
-    
+    /* Fixed SD layout: don't sweep the Retro-Go ROM cache (raw ROM bytes can false-match
+     * FS magics); it's registered as one labeled partition instead. Full chip otherwise. */
+    g_ext_scan_off_end = (total_ext_flash_size >= RETROGO_CACHE_OFFSET)
+                       ? RETROGO_CACHE_OFFSET : total_ext_flash_size;
+
     g_scan.progress_done = 0;
     g_scan.progress_total = count_check_points(BANK1_BASE, BANK1_BASE + BANK_SIZE, 16384)
                           + count_check_points(BANK2_BASE, BANK2_BASE + BANK_SIZE, 16384)
-                          + count_check_points(EXT_FLASH_BASE, EXT_FLASH_BASE + total_ext_flash_size, 65536);
+                          + count_check_points(EXT_FLASH_BASE, EXT_FLASH_BASE + g_ext_scan_off_end, 65536);
     
     g_modules_ready = false;
     /* Probe module sources (SD, then the LittleFS at its known offset) FIRST so
@@ -419,30 +470,35 @@ void partition_scan_update(void) {
             }
 
             case STATE_PROBE_LFS:
-                /* Probe the LittleFS at the standard patcher offsets (DESIGN.md
-                 * §2): SD-card variant = 8 MiB, full 64 MB layout = 56 MiB.
-                 * check_address() validates the on-flash superblock magic, so a
-                 * wrong/absent offset simply registers nothing. If we find an
-                 * extflash LittleFS here (or there's no extflash to hold one),
-                 * every module source is now registered — fire the theme load
-                 * immediately instead of waiting for the ~1 s sweep. Otherwise
-                 * stay not-ready and fall back to the old behavior (ready at
-                 * STATE_COMPLETE). The exhaustive scan still runs below for the
-                 * Partition Viewer; is_covered() keeps it from re-adding these. */
-                /* Primary: the Retro-Go LittleFS is INVERTED — its superblock sits
-                 * in the last block(s) of flash, not at the (erased) partition
-                 * start. Probe the last 64 KiB so check_address() finds the
-                 * inverted superblock and back-computes the real start. This is
-                 * layout-invariant: both the SD and full variants extend LittleFS
-                 * to the end of flash. */
-                if (total_ext_flash_size >= MODULE_LFS_END_WINDOW)
-                    check_address(EXT_FLASH_BASE + total_ext_flash_size - MODULE_LFS_END_WINDOW);
-                /* Secondary: the start-offset hints, for a (hypothetical) non-
-                 * inverted image at the standard patcher offsets. */
-                check_address(EXT_FLASH_BASE + MODULE_LFS_OFFSET_SD);
-                check_address(EXT_FLASH_BASE + MODULE_LFS_OFFSET_FLASH);
+                /* Register the module-source LittleFS (and, on the fixed SD layout, the
+                 * Retro-Go ROM cache) before the full sweep so the theme can load early.
+                 * The superblock magic is validated, so a wrong/absent layout registers
+                 * nothing and we fall back to ready-at-STATE_COMPLETE. */
+                if (total_ext_flash_size >= RETROGO_CACHE_OFFSET) {
+                    /* Fixed SD layout (DESIGN.md §2): the LittleFS is a bounded, inverted
+                     * partition butted against the FAT store, and everything above
+                     * RETROGO_CACHE_OFFSET is Retro-Go's raw ROM cache. Validate + register
+                     * the LFS at its known span, then register the cache region (hardcoded;
+                     * already excluded from the sweep in partition_scan_start). */
+                    probe_fixed_sd_lfs();
+                    add_partition(EXT_FLASH_BASE + RETROGO_CACHE_OFFSET,
+                                  total_ext_flash_size - RETROGO_CACHE_OFFSET,
+                                  "Retro-Go Cache", STR_DETAIL_ROM_CACHE, 0);
+                } else {
+                    /* Legacy non-SD / small-chip layouts: LittleFS inverted at the very end
+                     * of flash (primary), or non-inverted at a standard patcher offset
+                     * (secondary). check_address() validates the superblock either way. */
+                    if (total_ext_flash_size >= MODULE_LFS_END_WINDOW)
+                        check_address(EXT_FLASH_BASE + total_ext_flash_size - MODULE_LFS_END_WINDOW);
+                    check_address(EXT_FLASH_BASE + MODULE_LFS_OFFSET_SD);
+                    check_address(EXT_FLASH_BASE + MODULE_LFS_OFFSET_FLASH);
+                }
                 if (have_lfs_partition() || total_ext_flash_size == 0)
                     g_modules_ready = true;
+                /* Register the Retro-Go payload at its fixed base before the Bank-1
+                 * grid sweep, so is_covered() skips its region and the free-space
+                 * pass accounts for it. */
+                probe_retrogo();
                 g_scan.state = STATE_SCAN_INT1;
                 partition_current_phase = STR_PHASE_INT_FLASH;
                 return;
@@ -457,7 +513,7 @@ void partition_scan_update(void) {
                     g_scan.stride = 1024 * 1024;
                     g_scan.addr = EXT_FLASH_BASE;
                     g_scan.range_start = EXT_FLASH_BASE;
-                    g_scan.range_end = EXT_FLASH_BASE + total_ext_flash_size;
+                    g_scan.range_end = EXT_FLASH_BASE + g_ext_scan_off_end;   /* skip the Retro-Go ROM cache (registered separately) */
                     g_scan.min_stride = 65536;
                     partition_current_phase = STR_PHASE_EXT_FLASH;
                 } else {

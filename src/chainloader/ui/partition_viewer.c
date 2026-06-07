@@ -36,6 +36,11 @@ static struct {
 static int s_verify_idx = -1;
 static ofw_verify_status_t s_verify_status = OFW_VERIFY_NA;
 
+/* Cached Retro-Go version banner for the highlighted row. The scan walks the image
+ * (~200 KiB), so do it once per selection (like the CRC verify above), not per frame. */
+static int s_ver_idx = -1;
+static const char *s_ver_str = NULL;
+
 /* Partition grouping predicates: internal NOR (banks 1/2), external NOR (SD is
  * grouped separately), and the synthetic SD partition. */
 static bool pred_internal(const partition_info_t *p) { return p->address >= 0x08000000 && p->address < 0x08200000; }
@@ -115,6 +120,7 @@ static void execute_erase(void) {
     }
     g_part_view.mode = PART_MODE_LIST;
     s_verify_idx = -1;   /* partition indices changed; invalidate the verify cache */
+    s_ver_idx = -1;
     rebuild_virtual_list();
     g_part_view.list.num_items = g_part_view.virtual_count;
     if (g_part_view.list.selected >= g_part_view.list.num_items) {
@@ -185,10 +191,17 @@ static void partition_draw_right_pane(int selected_idx, uint32_t selected_tick) 
     }
 
     char detail_buf[40];
-    if (s_verify_status == OFW_VERIFY_BAD)
+    if (s_verify_status == OFW_VERIFY_BAD) {
         str_lcpy(detail_buf, sizeof(detail_buf), tr(STR_UNKNOWN));
-    else
+    } else if (strcmp(p->type, "Retro-Go") == 0) {
+        /* Show the raw on-flash version banner ("v1.3.1-84-g905d6615"); scan once
+         * per selection and fall back to the generic detail if it isn't found. */
+        if (s_ver_idx != p_idx) { s_ver_idx = p_idx; s_ver_str = partition_retrogo_version(p->address, p->size); }
+        if (s_ver_str) str_lcpy(detail_buf, sizeof(detail_buf), s_ver_str);
+        else           str_fmt1_int(detail_buf, sizeof(detail_buf), tr(p->detail_id), (int)p->detail_num);
+    } else {
         str_fmt1_int(detail_buf, sizeof(detail_buf), tr(p->detail_id), (int)p->detail_num);
+    }
     ui_list_pane_row(3, tr(STR_LBL_DETAILS), detail_buf, true, selected_tick);
 }
 
@@ -210,6 +223,7 @@ static void menu_partition_enter(ui_window_t *self) {
     }
     g_part_view.mode = (partition_scan_get_state() == PARTITION_SCAN_IN_PROGRESS) ? PART_MODE_SCANNING : PART_MODE_LIST;
     s_verify_idx = -1;   /* drop any cached verification from a prior session */
+    s_ver_idx = -1;
     rebuild_virtual_list();
     self->title = tr(STR_PARTITION_VIEWER);
     ui_list_init(&g_part_view.list, tr(STR_PARTITION_VIEWER), g_part_view.virtual_count, partition_get_label, partition_on_action);

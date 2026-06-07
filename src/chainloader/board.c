@@ -197,14 +197,31 @@ void board_adc_init(void) {
     ADC1->CR |= ADC_CR_ADVREGEN;
     HAL_Delay(1);
 
-    ADC12_COMMON->CCR = (1 << ADC_CCR_CKMODE_Pos);
+    /* Asynchronous ADC kernel clock = PLL2P (~98 MHz), which SystemClock_Config
+     * already provisions (ADCSEL = PLL2). CKMODE/PRESC = 0 selects that async
+     * source at /1 (matching the reference bootloader's ADC_CLOCK_ASYNC_DIV1).
+     * Synchronous mode (the previous bug) ignored PLL2 and ran the ADC off the
+     * 280 MHz AHB bus / 4 = 70 MHz, out of range, so conversions returned ~0 and
+     * the battery read as 0%. BOOST = 0b11 is mandatory above 25 MHz (the HAL's
+     * ADC_ConfigureBoostMode picks it for this clock: 98 MHz / 2 > 25 MHz). */
+    ADC12_COMMON->CCR = 0;
+    ADC1->CR |= ADC_CR_BOOST;
 
-    ADC1->CR &= ~ADC_CR_ADCALDIF;
-    ADC1->CR |= ADC_CR_ADCAL;
-    while (ADC1->CR & ADC_CR_ADCAL);
+    /* No software calibration. The reference/Retro-Go ADC path runs uncalibrated
+     * and reads correctly; our ADCAL was computing a bad ~1000-count offset that
+     * it then subtracted from every conversion, reading the battery ~1.5% low. */
+
+    /* Channel pre-selection: connect input 4 (PC4) to the ADC. Without this the
+     * analog input is left disconnected and conversions return ~0 (HAL does it in
+     * ADC_ConfigChannel; the hand-rolled register path had omitted it). */
+    ADC1->PCSEL = ADC_PCSEL_PCSEL_4;
 
     ADC1->SQR1 = (4 << ADC_SQR1_SQ1_Pos) | (0 << ADC_SQR1_L_Pos);
-    ADC1->SMPR1 = (7 << ADC_SMPR1_SMP4_Pos);
+    /* Short sampling time (1.5 cycles), matching the reference/Retro-Go ADC setup.
+     * The battery sense node is low-impedance, so a short sample grabs a clean
+     * instant; the previous 810.5-cycle window straddled LTDC/OSPI activity and
+     * integrated supply ripple, giving noisy, drifting reads. */
+    ADC1->SMPR1 = (0 << ADC_SMPR1_SMP4_Pos);
 
     ADC1->CR |= ADC_CR_ADEN;
     while (!(ADC1->ISR & ADC_ISR_ADRDY));
@@ -241,10 +258,19 @@ bool board_check_button(GPIO_TypeDef *port, uint16_t pin) {
 
 #ifndef STUB
 uint32_t board_get_battery_raw(void) {
-    ADC1->ISR |= ADC_ISR_EOC;
-    ADC1->CR |= ADC_CR_ADSTART;
-    while (!(ADC1->ISR & ADC_ISR_EOC));
-    return ADC1->DR;
+    /* Average several conversions. This read happens during the header draw, while
+     * the LCD/OSPI are active and the rail has switching ripple; Retro-Go samples
+     * in a quiet 400ms timer ISR and reads rock-steady. Averaging 16 back-to-back
+     * conversions gives us the same stability so the discharging min-latch in
+     * board_battery_update no longer pins the gauge to a transient low sample. */
+    uint32_t sum = 0;
+    for (int i = 0; i < 16; i++) {
+        ADC1->ISR |= ADC_ISR_EOC;
+        ADC1->CR |= ADC_CR_ADSTART;
+        while (!(ADC1->ISR & ADC_ISR_EOC));
+        sum += ADC1->DR;
+    }
+    return sum / 16u;
 }
 
 uint32_t board_get_battery_millivolts(void) {

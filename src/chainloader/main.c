@@ -8,6 +8,7 @@
 #include "../common/boot_magic.h"
 #include "storage/vfs.h"
 #include "system/bench.h"
+#include "system/ofw_verify.h"
 #include <string.h>
 
 #ifdef BOOT_BENCH
@@ -59,7 +60,7 @@ static void app_early_logic(void) {
 
     /* 1.2. B Button: Direct Retro-Go Boot Shortcut */
     if (board_check_button(BTN_B_GPIO_Port, BTN_B_Pin)) {
-        if (board_is_valid_app(RETROGO_BASE)) {
+        if (retrogo_bootable()) {
             board_jump_to_app(RETROGO_BASE);
         }
     }
@@ -92,7 +93,7 @@ static void app_early_logic(void) {
 
     /* 2.2. Standby Resume (Retro-Go standard) */
     if (boot_magic_check((volatile uint32_t *)SRAM_MAGIC_ADDR, BOOT_MAGIC_STANDBY)) {
-        if (board_is_valid_app(RETROGO_BASE)) board_jump_to_app(RETROGO_BASE);
+        if (retrogo_bootable()) board_jump_to_app(RETROGO_BASE);
     }
 
     /* 2.3. Intentional Navigation (Protocol-Aware) */
@@ -104,7 +105,7 @@ static void app_early_logic(void) {
             board_jump_to_app(target);
         } 
         if (sram_magic == BOOT_MAGIC_BOOT) {
-            if (board_is_valid_app(RETROGO_BASE)) {
+            if (retrogo_bootable()) {
                 *(volatile uint32_t *)SRAM_MAGIC_ADDR = 0;
                 board_jump_to_app(RETROGO_BASE);
             }
@@ -113,7 +114,7 @@ static void app_early_logic(void) {
 
     /* 2.4. Fast-Boot (packed settings word; invalid/wiped signature => off). */
     if (settings_fastboot(board_rtc_read_settings())) {
-        if (board_is_valid_app(RETROGO_BASE)) {
+        if (retrogo_bootable()) {
             board_jump_to_app(RETROGO_BASE);
         }
     }

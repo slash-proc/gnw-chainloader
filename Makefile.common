@@ -11,11 +11,77 @@ endif
 # the hardware). VERBOSITY=debug surfaces the drained openocd trace + gnwmanager's own logs.
 # ?= so an explicit environment override still wins; the safe default is debug-everywhere.
 # (Full explanation in scripts/common/__init__.py.)
-GNWMANAGER_OPENOCD_DEBUG ?= 1
-GNWMANAGER_VERBOSITY     ?= debug
-export GNWMANAGER_OPENOCD_DEBUG GNWMANAGER_VERBOSITY
+#GNWMANAGER_OPENOCD_DEBUG ?= 1
+#GNWMANAGER_VERBOSITY     ?= debug
+#export GNWMANAGER_OPENOCD_DEBUG GNWMANAGER_VERBOSITY
+
+RELEASE_VERSION ?= 0.5
+
+# --- Docker (reproducible build + flash inside a container) ---
+# DOCKER=0 (default): targets run on the host. DOCKER=1: the user-facing build/flash/install targets
+# re-run themselves inside slashproc/chainloader-builder (toolchain + python + gnwmanager + openocd),
+# with the repo bind-mounted and USB passed through for flashing. The container infra (Dockerfile,
+# scripts/docker/entrypoint.sh, requirements*.txt) already lives in this repo.
+# No Docker serial/usb device support for Windows/MacOS/Other
+PLATFORM := $(shell uname -s)
+USB_FLAG :=
+# Automatically detect SERIAL_PORT if none is defined
+ifeq ($(PLATFORM),Linux)
+    SERIAL_PORT ?= $(firstword $(wildcard /dev/ttyACM*) $(wildcard /dev/ttyUSB*))
+    JOYSTICK ?= $(firstword $(wildcard /dev/input/js*))
+    USB_FLAG := --device=/dev/bus/usb $(if $(SERIAL_PORT),--device=$(SERIAL_PORT),) $(if $(JOYSTICK),-v /dev/input:/dev/input --device-cgroup-rule='c 13:* rmw',)
+endif
+
+DOCKER_DEPS := Dockerfile scripts/docker/ requirements.txt requirements-dev.txt retro-go-sd/requirements.txt
+DOCKER_CHANGED := $(shell git diff --quiet $(RELEASE_VERSION) -- $(DOCKER_DEPS) 2>/dev/null || echo "dirty")
+ifneq ($(DOCKER_CHANGED),)
+    # subst /,- : a slash-bearing tag (e.g. backup/foo) is an invalid Docker image tag.
+    DOCKER_TAG := $(subst /,-,$(shell git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD))
+else
+    DOCKER_TAG := $(RELEASE_VERSION)
+endif
+CONTAINER_NAME  ?= chainloader-builder
+DOCKER_IMAGE    ?= slashproc/gnw-chainloader-builder:$(DOCKER_TAG)
+ARM_COMPILER_VERSION ?= 15.2.rel1
+DOCKER ?= 0
+# Forward user-specified vars to the inner make, minus DOCKER itself (so the inner make runs locally).
+_DOCKER_FWDVARS := $(filter-out DOCKER=%,$(MAKEOVERRIDES))
+# entrypoint.sh creates a user from HOST_UID/HOST_GID and gosu-drops to it (NOT docker --user).
+DOCKER_RUN := docker run --rm -it \
+    --network host \
+    --name $(CONTAINER_NAME) \
+    --hostname $(CONTAINER_NAME) \
+    --add-host $(CONTAINER_NAME):127.0.0.1 \
+    -e HOST_UID=$(shell id -u) \
+    -e HOST_GID=$(shell id -g) \
+    -v $(CURDIR):/opt/workdir \
+    $(USB_FLAG) \
+    $(DOCKER_IMAGE)
+
+# Canned recipe: re-run THIS target ($@) inside the container. Used by the DOCKER=1 branches below.
+define IN_DOCKER
+	$(DOCKER_RUN) $(MAKE) $@ $(_DOCKER_FWDVARS)
+endef
+
+# Build the build image from the in-repo Dockerfile; open an interactive container shell.
+docker-build:
+	docker build --network=host --build-arg ARM_COMPILER_VERSION=$(ARM_COMPILER_VERSION) -f Dockerfile --tag $(DOCKER_IMAGE) .
+
+docker-shell:
+	$(DOCKER_RUN) bash
+
+# DOCKER=1 convenience aliases for the composed SD stages (mirrors the -sd alias pattern).
+all-in-one-sd-docker:
+	$(MAKE) all-in-one-sd DOCKER=1
+
+upgrade-sd-docker:
+	$(MAKE) upgrade-sd DOCKER=1
 
 # Flashing targets using gnwmanager
+ifeq ($(DOCKER),1)
+flash-chainloader:
+	$(IN_DOCKER)
+else
 flash-chainloader: all
 	@echo "Ensuring device is unswapped..."
 	-python3 scripts/debug/bank.py unswap --halt
@@ -23,6 +89,7 @@ flash-chainloader: all
 	gnwmanager flash bank1 $(BUILD_DIR)/$(TARGET).bin
 	gnwmanager start bank1
 	-$(RESTORE_KEYSTONE)
+endif
 
 # Deploy the PIE driver modules to the device's LittleFS: the FS drivers to
 # /modules/filesystems/ and the sprite theme module to /modules/theme/. These are the
@@ -30,9 +97,13 @@ flash-chainloader: all
 # patched OFW goes to external flash). Run after rebuilding a module so the
 # device picks up the new binary. `all` builds them, so this depends on it —
 # keeping compile+push one cohesive flow.
+ifeq ($(DOCKER),1)
+push-modules:
+	$(IN_DOCKER)
+else
 push-modules: all
 	@echo "Pushing driver modules (FS, theme, language, installer) ..."
-	@python3 scripts/build/push_batched.py \
+	@LFS_SIZE=$(LFS_SIZE) python3 scripts/build/push_batched.py \
 	    /fs/fat.bin=$(BUILD_DIR)/fatfs.bin \
 	    /fs/lfs.bin=$(BUILD_DIR)/lfs_rw.bin \
 	    /modules/theme/theme.bin=$(BUILD_DIR)/theme.bin \
@@ -44,6 +115,7 @@ push-modules: all
 	    /modules/features/mp3.bin=$(BUILD_DIR)/mp3.bin \
 	    /modules/features/picture.bin=$(BUILD_DIR)/picture.bin
 	-$(RESTORE_KEYSTONE)
+endif
 
 # Convenience: flash the chainloader AND deploy the modules in one go. Use this
 # after an ABI change (e.g. the module header) where the on-device modules must
@@ -59,9 +131,22 @@ RG_INTFLASH_ADDRESS ?= 0x0800A000
 RG_OFW_ADDRESS ?= 0x08100000
 RG_FLASH_LENGTH ?= 216k
 RG_SD_CARD ?= 1
-RG_EXTFLASH_OFFSET ?= 10485760
+RG_REMOTE_INPUT ?= $(REMOTE_INPUT)
+# --- External-flash SD layout (mirrors src/common/memory_map.h) ---
+# Layout, bottom to top:  OFW assets + backups | FAT module store | LittleFS | Retro-Go ROM cache
+# The lower regions are fixed; the LittleFS (LFS_SIZE) is the one tunable partition, and the ROM
+# cache takes whatever remains above it to the end of the chip.
+SD_ASSETS_END ?= 0x540000     # end of OFW assets + both OFW backups == FAT store start (MODULE_FAT_OFFSET)
+SD_FAT_SIZE   ?= 0x4C0000     # FAT module store size (runs up to the LittleFS start, 0xA00000)
+LFS_SIZE      ?= 10485760     # LittleFS size in bytes (10 MiB default). Bump this to grow the module store.
+# Derived. RG_EXTFLASH_OFFSET is what Retro-Go gets as EXTFLASH_OFFSET: the ROM cache's LOWER bound,
+# i.e. the full footprint below it (assets+backups + FAT + LFS). RG_LFS_FLASH_OFFSET is where the
+# LittleFS image is flashed (right after the FAT store). LFS_SIZE is also fed to the C build as
+# -DMODULE_LFS_SIZE so memory_map.h's RETROGO_CACHE_OFFSET matches this exactly.
+RG_LFS_FLASH_OFFSET := $(shell echo $$(( $(SD_ASSETS_END) + $(SD_FAT_SIZE) )))
+RG_EXTFLASH_OFFSET  := $(shell echo $$(( $(SD_ASSETS_END) + $(SD_FAT_SIZE) + $(LFS_SIZE) )))
+RG_FILESYSTEM_SIZE  := $(LFS_SIZE)
 RG_EXTFLASH_SIZE_MB = $(if $(filter 1,$(RG_SD_CARD)),$(EXTFLASH_SIZE),$(shell echo $$(( $(EXTFLASH_SIZE) - 8 ))))
-RG_FILESYSTEM_SIZE ?= $(if $(filter 1,$(RG_SD_CARD)),$(shell echo $$(( $(EXTFLASH_SIZE) * 1024 * 1024 - $(RG_EXTFLASH_OFFSET) ))),4194304)
 RG_DISABLE_SPLASH_SCREEN ?= 1
 RG_COMPRESS ?= 0
 RG_SINGLE_FONT ?= 1
@@ -92,19 +177,65 @@ build-rg:
 build-rg-sd:
 	$(MAKE) build-rg RG_SD_CARD=1
 
-flash-rg: build-rg
-	@echo "Flashing Retro-Go binaries (SD_CARD=$(RG_SD_CARD))..."
-	@if [ "$(RG_SD_CARD)" = "1" ]; then \
-		gnwmanager flash $(RG_INTFLASH_ADDRESS) retro-go-sd/build/gw_retro_go_intflash.bin \
-			-- flash ext retro-go-sd/build/littlefs.bin --offset=$(RG_EXTFLASH_OFFSET) \
-			-- start $(RG_INTFLASH_ADDRESS); \
+# Build Retro-Go only if its artifacts are missing (any build is clean, via build-rg's
+# `make -C retro-go-sd clean`). build-rg / build-rg-sd force a fresh rebuild; the flash-rg*
+# targets below build-if-missing through this guard.
+ensure-rg:
+	@if [ ! -f retro-go-sd/build/gw_retro_go_intflash.bin ] || [ ! -f retro-go-sd/build/littlefs.bin ]; then \
+		$(MAKE) build-rg; \
 	else \
-		gnwmanager flash $(RG_INTFLASH_ADDRESS) retro-go-sd/build/gw_retro_go_intflash.bin \
-			-- flash ext retro-go-sd/build/frogfs.bin --offset=$(RG_EXTFLASH_OFFSET) \
-			-- flash ext retro-go-sd/build/littlefs.bin --offset=$$(($(EXTFLASH_SIZE) * 1024 * 1024 - $(RG_FILESYSTEM_SIZE))) \
-			-- start $(RG_INTFLASH_ADDRESS); \
+		echo "Retro-Go artifacts present; skipping build (run build-rg-sd to force a clean rebuild)."; \
+	fi
+
+ensure-rg-sd:
+	$(MAKE) ensure-rg RG_SD_CARD=1
+
+# Retro-Go flashing is split into the core launcher (internal flash) and the bulky extras (the
+# on-flash filesystem image) so a launcher update need not rewrite the filesystem:
+#   flash-rg-core   : intflash only. Non-destructive to external flash (OFW/assets/FAT/LFS/saves).
+#   flash-rg-extras : the LittleFS image (SD) or FrogFS+LittleFS (non-SD). OVERWRITES the LFS, so
+#                     re-run push-modules + push-i18n afterwards.
+# Both build-if-missing via ensure-rg; build-rg-sd forces a fresh build first.
+ifeq ($(DOCKER),1)
+flash-rg-core:
+	$(IN_DOCKER)
+else
+flash-rg-core: ensure-rg
+	@echo "Flashing Retro-Go core launcher (intflash)..."
+	gnwmanager flash $(RG_INTFLASH_ADDRESS) retro-go-sd/build/gw_retro_go_intflash.bin \
+		-- start $(RG_INTFLASH_ADDRESS)
+	-$(RESTORE_KEYSTONE)
+endif
+
+ifeq ($(DOCKER),1)
+flash-rg-extras:
+	$(IN_DOCKER)
+else
+flash-rg-extras: ensure-rg
+	@echo "Flashing Retro-Go extras (filesystem image, SD_CARD=$(RG_SD_CARD)); this OVERWRITES the LittleFS, re-push modules/i18n after..."
+	@if [ "$(RG_SD_CARD)" = "1" ]; then \
+		gnwmanager flash ext retro-go-sd/build/littlefs.bin --offset=$(RG_LFS_FLASH_OFFSET); \
+	else \
+		gnwmanager flash ext retro-go-sd/build/frogfs.bin --offset=$(RG_EXTFLASH_OFFSET) \
+			-- flash ext retro-go-sd/build/littlefs.bin --offset=$$(($(EXTFLASH_SIZE) * 1024 * 1024 - $(RG_FILESYSTEM_SIZE))); \
 	fi
 	-$(RESTORE_KEYSTONE)
+endif
+
+flash-rg-core-sd:
+	$(MAKE) flash-rg-core RG_SD_CARD=1
+
+flash-rg-extras-sd:
+	$(MAKE) flash-rg-extras RG_SD_CARD=1
+
+# flash-rg = core + extras (ensure-rg dedups to a single build). Preserves the old one-shot
+# "flash everything" behavior; still wipes the LFS via extras, so callers re-push modules/i18n.
+ifeq ($(DOCKER),1)
+flash-rg:
+	$(IN_DOCKER)
+else
+flash-rg: flash-rg-core flash-rg-extras
+endif
 
 flash-rg-sd:
 	$(MAKE) flash-rg RG_SD_CARD=1
@@ -121,6 +252,10 @@ flash-zelda: patch-zelda
 	gnwmanager flash ext $(BUILD_DIR)/patched_internal_zelda.bin --offset=0x500000
 	-$(RESTORE_KEYSTONE)
 
+ifeq ($(DOCKER),1)
+flash-all:
+	$(IN_DOCKER)
+else
 flash-all: all patch prepare-fat-bin
 	@echo "Ensuring device is unswapped..."
 	-python3 scripts/debug/bank.py unswap --halt
@@ -133,6 +268,7 @@ flash-all: all patch prepare-fat-bin
 		-- flash ext $(BUILD_DIR)/fat.bin --offset=$(FAT_OFFSET) \
 		-- start bank1
 	-$(RESTORE_KEYSTONE)
+endif
 
 # MODULE_FAT_OFFSET (memory_map.h): the FAT module-store partition on external flash.
 FAT_OFFSET ?= 0x540000
@@ -150,7 +286,62 @@ flash-fatfs: prepare-fat-bin
 	gnwmanager flash ext $(BUILD_DIR)/fat.bin --offset=$(FAT_OFFSET)
 	-$(RESTORE_KEYSTONE)
 
-.PHONY: flash-chainloader push-modules deploy flash-mario flash-zelda flash-all prepare-fat-bin flash-fatfs
+# Push the whole built SD-card content (retro-go-sd/sd_content, including roms/, EXCLUDING the
+# update_bank2.bin updater) to the device's SD card via gnwmanager sdpush, mirroring retro-go's
+# flash_sd. scripts/build/push_sd.py enumerates the tree at recipe time (handles subdirs + spaces)
+# and drives one gnwmanager session; unchanged files are skipped, so re-runs are cheap.
+ifeq ($(DOCKER),1)
+push-rg-sd:
+	$(IN_DOCKER)
+else
+push-rg-sd: ensure-rg
+	@echo "Pushing SD-card content to the card (this can take a while on first run)..."
+	python3 scripts/build/push_sd.py --root retro-go-sd/sd_content --exclude update_bank2.bin
+	-$(RESTORE_KEYSTONE)
+endif
+
+# --- One-shot SD provisioning stages ---
+# Full from-scratch SD install: build everything in dependency order (Retro-Go first so its CRC
+# bakes into the chainloader via the ofw_verify.o header dependency in Makefile), then flash and
+# populate the device. Note: flash-all re-runs its patch/prepare-fat-bin prereqs (deterministic,
+# the just-baked ofw-crc still matches), so no make clean is needed anywhere.
+all-in-one-sd:
+ifeq ($(DOCKER),1)
+	$(IN_DOCKER)
+else
+	$(MAKE) build-rg-sd
+	$(MAKE) retrogo-crc
+	$(MAKE) patch
+	$(MAKE) ofw-crc
+	$(MAKE) flash-all
+	$(MAKE) flash-rg-core-sd
+	$(MAKE) flash-rg-extras-sd
+	$(MAKE) push-modules
+	$(MAKE) push-i18n
+	$(MAKE) push-rg-sd
+	@echo "all-in-one-sd: done."
+endif
+
+# Non-destructive Retro-Go update: rebuild + flash the core launcher only, and reflash the
+# chainloader so its baked Retro-Go CRC matches the new core (the ofw_verify.o header dependency
+# makes that rebuild automatic). Leaves OFW backups, assets, FAT store, and the LittleFS
+# (modules/i18n/saves) untouched. A core update that also changes /cores needs all-in-one-sd.
+# (Once the /retrogo.crc LittleFS override lands, the flash-chainloader step becomes a push.)
+upgrade-sd:
+ifeq ($(DOCKER),1)
+	$(IN_DOCKER)
+else
+	$(MAKE) build-rg-sd
+	$(MAKE) retrogo-crc
+	$(MAKE) flash-rg-core-sd
+	$(MAKE) flash-chainloader
+	@echo "upgrade-sd: done (OFW/assets/FAT/LittleFS untouched)."
+endif
+
+.PHONY: flash-chainloader push-modules deploy flash-mario flash-zelda flash-all prepare-fat-bin flash-fatfs \
+        ensure-rg ensure-rg-sd flash-rg flash-rg-sd flash-rg-core flash-rg-core-sd flash-rg-extras flash-rg-extras-sd \
+        build-rg build-rg-sd all-in-one-sd upgrade-sd push-rg-sd \
+        docker-build docker-shell all-in-one-sd-docker upgrade-sd-docker
 
 
 

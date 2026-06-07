@@ -131,6 +131,8 @@ static const char *const i18n_en[STR_COUNT] = {
 
     [STR_FOOTER_PICKER]         = "PAUSE: ADD FOLDER   A: PICK",
     [STR_SD_ADDR]               = "SD",
+
+    [STR_DETAIL_ROM_CACHE]      = "ROM Cache",
 };
 
 /* Active language pack table (STR_COUNT entries) or NULL for English-only.

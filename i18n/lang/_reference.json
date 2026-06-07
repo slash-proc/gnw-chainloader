@@ -100,6 +100,7 @@
   "STR_DETAIL_APP_BIN": "APP BIN",
   "STR_DETAIL_CHAINLOADER": "GNW-Chainloader",
   "STR_TYPE_FIRMWARE": "Firmware",
+  "STR_DETAIL_ROM_CACHE": "ROM Cache",
   "STR_PHASE_MODULES": "Modules",
   "STR_PHASE_INT_FLASH": "Internal Flash",
   "STR_PHASE_EXT_FLASH": "External Flash",

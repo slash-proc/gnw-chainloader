@@ -8,6 +8,12 @@ disasm.txt
 memory_dump*
 *.mp4
 
+# auto generated
+/src/common/retrogo_crc.h
+
+# docker home directory nonsense
+.bash_history
+
 # --- Project-specific ---
 notes/
 example projects/

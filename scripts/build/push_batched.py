@@ -31,6 +31,9 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ -> import `common`
+from common import lfs_gnwmanager_offset
+
 BANK1 = 0x08000000
 
 
@@ -83,21 +86,22 @@ def main():
     # Always capture the full DEBUG log (gnwmanager + openocd transactions) to a
     # file so a wedge is always diagnosable after the fact, independent of console
     # noise. --debug additionally streams it to the console. (Keep debug always on.)
-    os.environ.setdefault("GNWMANAGER_OPENOCD_DEBUG", "1")
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
-    debug_log = Path(__file__).resolve().parents[2] / "build" / "push_batched_debug.log"
-    debug_log.parent.mkdir(parents=True, exist_ok=True)
-    fh = logging.FileHandler(debug_log, mode="w")
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(fmt)
-    root.addHandler(fh)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG if args.debug else logging.INFO)
-    ch.setFormatter(fmt)
-    root.addHandler(ch)
-    print(f"(full debug log always at: {debug_log})", flush=True)
+    if args.debug:
+        os.environ.setdefault("GNWMANAGER_OPENOCD_DEBUG", "1")
+        fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        root = logging.getLogger()
+        root.setLevel(logging.DEBUG)
+        debug_log = Path(__file__).resolve().parents[2] / "build" / "push_batched_debug.log"
+        debug_log.parent.mkdir(parents=True, exist_ok=True)
+        fh = logging.FileHandler(debug_log, mode="w")
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.DEBUG if args.debug else logging.INFO)
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+        print(f"(full debug log always at: {debug_log})", flush=True)
 
     files = []
     if not args.rm:
@@ -126,7 +130,7 @@ def main():
         with time_budget(args.start_timeout, "start_gnwmanager"):
             gnw.start_gnwmanager()
         print(f"  ready in {time.time() - t0:.1f}s; ext flash {gnw.external_flash_size >> 20} MB", flush=True)
-        fs = gnw.filesystem(offset=0)
+        fs = gnw.filesystem(offset=lfs_gnwmanager_offset(gnw.external_flash_size))
 
         if args.rm:
             removed = 0

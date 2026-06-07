@@ -33,6 +33,7 @@ if __package__ in (None, ""):                     # allow `python3 envprobe.py` 
 
 from . import harness as h
 from . import observe
+from . import lfs_gnwmanager_offset
 
 # --- Reset-vector constants (single source; boot_selector_test imports these) ---
 # The OFW's reset vector, used to recognize which OFW a Bank-2 image / a running
@@ -220,7 +221,7 @@ def list_lfs_content():
         gnw = GnW(backend)
         with h.time_budget(90.0, "start_gnwmanager"):
             gnw.start_gnwmanager()
-        fs = get_filesystem(gnw, offset=0)
+        fs = get_filesystem(gnw, offset=lfs_gnwmanager_offset(gnw.external_flash_size))
         for root, _dirs, files in _safe_walk(fs, "/modules"):
             for fn in files:
                 if fn.endswith(".bin"):
