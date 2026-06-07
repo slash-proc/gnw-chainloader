@@ -1,0 +1,111 @@
+BSD 3-Clause License
+
+Copyright (c) 2026, Doug Danat
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its contributors
+   may be used to endorse or promote products derived from this software
+   without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+================================================================================
+THIRD-PARTY COMPONENTS AND ACKNOWLEDGEMENTS
+================================================================================
+
+This project would not exist without the Game & Watch homebrew community. The
+chainloader's own source under src/ is licensed under the BSD 3-Clause License
+above, with two exceptions that remain the property of their authors and retain
+their own headers:
+
+  * src/chainloader/startup.s            — STMicroelectronics (CMSIS), (C) 2019
+  * src/chainloader/system_stm32h7xx.c   — STMicroelectronics (CMSIS), (C) 2017
+
+This project also builds upon, derives techniques and code from, and bundles the
+following works, each of which remains under its own license. Where code is
+derived from a BSD-3-Clause project, the notice below preserves that project's
+copyright as required by clause 1 of its license.
+
+--------------------------------------------------------------------------------
+Code and techniques derived into this project's source (BSD-3-Clause lineage)
+--------------------------------------------------------------------------------
+
+* Original Game & Watch hardware hacking, bootloader, and the STM32 register
+  sequences this work descends from
+  — Konrad Beckmann (kbeckmann) and Thomas Roth (stacksmashing).
+
+* game-and-watch-patch — OFW binary-patching and the append-and-redirect hook.
+  src/patch/main.c is substantially derived from it (via Marian Muller's fork,
+  which this project used as its reference) and contains portions copied verbatim
+  (the LZMA decompression plumbing and patch entry scaffolding); the
+  check_start_button() and chainloader() hook logic are original to this project.
+  — Brian Pugh (https://github.com/brianpugh/game-and-watch-patch) and
+    Marian Muller (https://github.com/marian-m12l/game-and-watch-patch),
+    BSD-3-Clause.
+
+* game-and-watch-patch (fork) — also the source of the bank-swapping technique
+  that src/common/banks.h reimplements in bare-metal register form (no code
+  copied verbatim; the option-byte sequence follows the STM32H7 reference manual).
+  — Marian Muller (https://github.com/marian-m12l/game-and-watch-patch),
+    BSD-3-Clause.
+
+  The above BSD-3-Clause sources carry the notice:
+    Copyright 2020 Konrad Beckmann, Thomas Roth, STMicroelectronics
+  redistributed here under the same three conditions and disclaimer as stated
+  in the BSD 3-Clause License above.
+
+--------------------------------------------------------------------------------
+Bundled third-party code (under deps/, each under its own license)
+--------------------------------------------------------------------------------
+
+* STM32H7xx HAL Drivers and CMSIS device headers (deps/Drivers, deps/Core)
+  — STMicroelectronics. HAL: BSD-3-Clause; CMSIS: Apache-2.0.
+
+* LZMA decoder (deps/Core/Src/LzmaDec.c)
+  — Igor Pavlov, LZMA SDK. Public domain.
+
+* External flash memory mapper and JEDEC driver (deps/Core/Src/flash.c)
+  — Derived from gnwmanager's Core/Src/flash.c (Copyright 2023 Brian Pugh, Apache-2.0)
+    with SFDP reading logic ported from retro-go's gw_flash.c (Copyright 2021
+    Sylver Bruneau and contributors, GPL-2.0).
+
+--------------------------------------------------------------------------------
+Aggregated submodules (separate programs; not linked into the firmware binary)
+--------------------------------------------------------------------------------
+
+* gnwmanager/ — host-side flashing/patching tool.
+  — Brian Pugh (https://github.com/brianpugh/gnwmanager), Apache-2.0.
+
+* retro-go-sd/ — Retro-Go launcher this chainloader hands control to at runtime.
+  — Sylver Bruneau, Konrad Beckmann, and contributors
+    (https://github.com/sylverb/game-and-watch-retro-go-sd), GPL-2.0.
+  Distributed here as mere aggregation under GPLv2 §2; it retains the GPL-2.0
+  license and is not combined with the BSD-licensed chainloader source.
+
+--------------------------------------------------------------------------------
+Special thanks
+--------------------------------------------------------------------------------
+
+To the reverse engineers and developers who decoded the STM32H7 Game & Watch,
+hacked it open, and built the community around it:
+Thomas Roth (stacksmashing), Konrad Beckmann (kbeckmann), Brian Pugh
+(BrianPugh), Sylver Bruneau (sylverb), and Marian Muller (marian-m12l).

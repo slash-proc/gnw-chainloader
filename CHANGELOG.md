@@ -1,0 +1,83 @@
+# Changelog
+
+A terse, bullet-point record of completed bug fixes and tasks, newest first. Keep each entry to one line and link the commit(s) that landed it. (Entries below predate this convention, so they are not all commit-linked.)
+
+- Added ".." parent directory link in the file browser when inside subdirectories, blocking destructive context menu actions (COPY, DELETE) on it while preserving directory selection on back-navigation.
+- Renamed `build_retro_go`/`flash_retro_go` to `build_rg`/`flash_rg`; implemented dynamic `RG_FILESYSTEM_SIZE` and updated `flash_rg` to automatically skip FrogFS and offset LittleFS to 8MB when `RG_SD_CARD=1` is set; added `build_rg_sd` and `flash_rg_sd` convenience targets.
+- Optimized stub and app binaries for extreme space efficiency: truncated the stub vector table to exclude unused external interrupts (-620 B); replaced all HAL GPIO reads/writes with bare-metal BSRR/IDR registers and removed HAL_PWR_EnableBkUpAccess entirely, allowing unused HAL functions to be stripped; simplified the stub LZMA allocator; and optimized board_is_valid_app check (gained 768 B of free space, final binary size: 31,984 B, 784 B free).
+- Centered menu items vertically inside the Main and Tools menus when they contain fewer lines than the maximum limits, using an exact mathematical vertical spacing offset `(h - count * 20 + 12) / 2`; excluded split views (File Browser and Partition Viewer) to keep them top-aligned at `y + 5`; reverted horizontal alignment back to left-aligned.
+- Swapped incorrect Zelda selection indicator metasprites for the authentic G&W clock fairy left/right animation sprites (tile 190.0/190.1) centered at coordinate `x + 6`.
+- Adjusted Zelda theme background to a lighter, richer green (#1E6030) and brightened the gold accent (#E5B83B); refactored window borders, split separators, progress bars, and footers to use gold accents/borders dynamically via a new global `gui_border_color` variable and `COLOR_BORDER` macro to save flash space.
+- Fixed FrogFS filename comparison bug by replacing strcmp with safe memcmp (filenames in FrogFS are not null-terminated); added Used and Free space reporting pane to the File browser partition list, implementing statfs support across LittleFS (host/dynamic), FatFS, and FrogFS. Removed the file VIEW action and prefix tab markers to save space, and refactored format_size to show sizes with 1 decimal place using a DRY format_unit helper.
+- Fixed LittleFS write freeze and memory corruption by replacing stack-allocated file configs in lfs_vfs_open with static config arrays; cleanly unmounted the temporary LFS volume after driver loading in vfs.c; blocked direct mapping/copying of compressed files in FrogFS.
+- Fixed VFS copy-paste across tabs by auto-mounting the source partition during paste; added "LITTLEFS RW" vs "LITTLEFS" label detection; implemented press-any-button "ERROR" modals; fixed Partition Viewer scrolling divider visibility; relocated build_zelda to build/zelda and copied the generated labeled Zelda tileset to backup/.
+- Integrated dynamic LittleFS RW driver (lfs_rw.bin loaded at 0x240C0000 in RAM) to keep the main launcher within the 32KB limit; polished tab title formats, removed copy/paste completion popups, and increased modal background dimming to 75% opacity.
+- Cleaned up theme logic (Mario/Zelda/Default fallback), fixed missing cloud animation state, and added animated fairy indicator for Zelda; resolved file browser navigation, overview starting state, tab indicators, and modal overlap issues; enabled Paste/Delete operations on all read-write partitions (both LFS and FAT); added standalone drivers Makefile.
+- Fixed window stacking drawing and modal background legibility issues (underlying windows are no longer drawn under non-modals, modals now use a solid background, and main/tools menus are sized to their floating dimensions to restore animated background/Yoshi floor); added tab switch and browser exit filesystem unmounting.
+- Implemented Virtual Filesystem (VFS) abstraction with dynamic RAM driver loading; excluded FatFs write/exFAT/LFN code from the main launcher to save ~2KB (Final: 30,780 bytes) and compiled it as a standalone driver (`fatfs.bin`) loaded on-demand to SRAM address `0x240A0000` when accessing FAT partitions.
+- Refactored UI to a unified window/modal stack (ui_window_t), implemented a dual-tab file browser (Left/Right tab switching), always-on header/battery status, and optimized code size (stripped exit/malloc/free machinery, direct enum checks, simplified formatting) to fit within the 32 KiB internal flash limit.
+- Implemented "Toggle Fast-Boot" in the Tools menu, writing BOOT_MAGIC_FASTBOOT ("RTRO") to backup register 3 to bypass the chainloader launcher menu unless PAUSE/SET is held at boot. Verified on hardware.
+- Fixed god-mode OFW boot hang (black screen): the LEFT/RIGHT-at-boot flash path drew a progress bar via `gui_refresh` before `gui_init()` ran, spinning forever on the LTDC blanking wait; now calls `gui_init()` in the god-mode flash branch and made `gui_init`/`gui_deinit` idempotent. Verified on hardware.
+- Fixed inconsistent OFW boot (bounced back to chainloader): a `FRCE` magic stranded at `0x2001FFF8` by the OFW recovery hook (which unswaps+resets into the chainloader, so the OFW never consumes it) poisoned the next bank-swap into the OFW; the chainloader now scrubs `SRAM_MAGIC_ADDR` when it commits to the launcher menu (`main.c`). Verified on hardware.
+- Second debloat pass (byte-focused): collapsed `gui_draw_text` onto the marquee renderer (one shared UTF-8 decoder + draw loop), merged the dim/frost rect blenders behind one `gui_draw_blend_rect` with a shared `gui_clip_rect` helper, dropped the redundant extension-uppercasing in the file browser (the font rasteriser already uppercases), and table-drove the `MX_GPIO_Init`/OSPI/LTDC pin setup in `board.c`. App `.text` 39,672 → 39,128 B; flashed app payload 27,562 B (−366 B). Verified on hardware via framebuffer capture (menu, themed OSPI art, LTDC render all intact).
+- Implemented minimal UTF-8 decoder and integrated unscii-8 font (ASCII + combining diacritics), replacing the RAM-heavy dynamic font system and freeing 512 bytes of AXI-SRAM.
+- Implemented aggressive codebase cleanup: removed 7+ dead files/functions, consolidated UI helpers, and fixed circular asset-cooking dependency (drastically reduced asset bloat).
+- Fixed misleading `gui_backlight_set` API, consolidated RTC backup registers, and optimized `gui_draw_rect` clipping.
+- Consolidated bank-swap logic in `banks.h` and LFS DCache toggles.
+- Added build-time feature flags for extended string utilities.
+- Optimized boot architecture: Migrated boot hierarchy (OFW switching, magic words) to the compressed app image; reduced flash stub to a bare-minimum 4.4KB loader.
+- Maximized compression: Switched to a 128 KiB LZMA dictionary for the main app, leveraging oneshot decompression to fit complex features into 32 KiB flash.
+- Enabled full filesystem support: exFAT, 255-char Long File Names (LFN), and Read/Write mode enabled in FatFs with hardware RTC timestamp integration.
+- Protected Retro-Go state: Reserved a 4KB DTCM Safe Zone and implemented stub-level direct-jumps for warm resets to prevent overwriting AXI-SRAM state.
+- Implemented usage-based asset cooking: `cook_assets.py` now scans source code for required symbols; dropped space-inefficient OFW font extraction.
+- Refined UI Aesthetics: Introduced 'Frosted Glass' (Mario) and 'Gilded Forest' (Zelda Moss/Gold) themes with semi-transparent blending and consistent 8x8 font.
+- Centralized Power Management: Unified `INPUT_PWR` handling across all menus and implemented automatic OFW flashing/switching via boot-time button shortcuts.
+- Fixed File Browser navigation: Implemented a selection stack to remember and restore the highlighted item when moving back through directories.
+- Pivoted asset pipeline to usage-based dynamic cooking: `cook_assets.py` now recursively scans source code for `ASSET_` symbols to determine which sprites are baked into the binary.
+- Abandoned space-inefficient OFW font extraction in favor of a clean, standardized 8x8 built-in font for all themes, resolving ROM-specific character mapping bugs and reclaiming flash space.
+- Optimized Mario asset storage by switching from raw 8bpp pixels to compact tile indices, aligning with the Zelda implementation to fit within the 32 KiB internal flash limit.
+- Unified File Browser UI to use split-pane layout congruent with Partition Viewer, displaying detailed file metadata (Type extension and formatted B/KB/MB size) on the right pane, optimized for size by omitting name duplication.
+- Enabled dynamic marquee scrolling for long filenames in the File Browser by expanding filename cache limits to 64 bytes and correcting screen margin clipping boundaries.
+- Refactored Diagnostics menu to static "Tools" menu (ordered before "Power Off" in the main menu), relocated the "File Browser" inside it, and cleaned up unused diagnostics options.
+- Commented out Palette, Memory Magic, and Reload Menu options in the Diagnostics submenu to reclaim 572 bytes of flash, leaving 636 bytes free.
+- Resolved LittleFS mount failure (-12) by configuring prog_buffer and prog_size always to prevent out-of-memory errors in LFS_READONLY configuration.
+- Implemented dynamic, lowercase, index-numbered prefix paths with automatic marquee title scrolling in the File Browser.
+- Refactored File Browser to dynamically browse detected filesystems (LittleFS, FrogFS, FAT), implementing direct-register SPI/ADC drivers and stub clock optimizations to fit within the 32 KiB internal flash limit, and displaying the current path as the window title.
+- Replaced hand-rolled LittleFS copy with upstream `littlefs-project/littlefs` v2.11.3 submodule; added `sylverb/FatFs` submodule (exFAT, read-only, tiny-mode); rewrote `lfs_wrapper.c` with 256-byte buffers, inverted-block addressing, and DCache-safe OSPI prog/erase callbacks (commit 57518b5).
+- Eliminated HAL RTC driver dependency and implemented direct TAMP register access, saving 472 bytes of internal flash space (commit f434096).
+- Minimized flash stub size and complexity by compiling only essential HAL drivers and gating unused board logic (commit e3ab8fe).
+- Implemented read-only LittleFS File Browser with directory traversal and mount diagnostics, utilizing static buffers and optimizing OFW checks to reclaim flash space (commit e42fe05).
+- Polished UI engine: added stateless marquee text scrolling, refined split-pane borders, centered footer layout, and sprite-safe menu size limits.
+- Refactoring complete: Implemented modular UI engine (ui_page_t), generalized list renderer with split-pane mode, and unified flash operations.
+- Added auto-repeat (DAS/ARR) logic to directional inputs across all menus for rapid scrolling.
+- Prevented graphical corruption during firmware flashing by utilizing a stable, sprite-less background.
+- Fully resolved external flash (OSPI) chip detection by mirroring working bootloader initialization and fixing power rail control (PD1/PD4).
+- Phase 1 Refactor complete: Centralized string/hex utilities and implemented global input tracking system.
+- Finalized Partition Viewer diagnostic tool with background scanning, anchored signature detection (Zelda/Mario/Retro-Go), and support for inverted LittleFS layouts.
+- Implemented non-blocking background flash scanning at startup with results caching and manual rescan trigger (PAUSE/SET+UP).
+- Added partition deletion functionality with "Are you sure?" confirmation dialog and real-time progress bar tracking.
+- Optimized internal flash scanning with 16KB strides and dynamic Retro-Go footprint detection.
+- Relocated "Reload Menu" and restored "Memory Magic" to the Diagnostics submenu.
+- Renamed "Storage Explorer" to "Partition Viewer" throughout the project and documentation.
+- Implemented dynamic LittleFS partition size detection via superblock metadata parsing, enabling correct identification of variable-sized filesystems.
+- Stabilized LCD initialization by matching proven reset sequences and SPI timings, addressing the "white screen" regression.
+- Corrected GPIO configuration for the UP button (added PD0 to input list).
+- Finalize internal flash partition viewer with address-sorted display and properties panel.
+- Implement geometric step-down memory scanner and dummy "Partition Viewer" to diagnostics.
+- Fixed Retro-Go's "Quit to menu" failing to return to the browser. The chainloader now reserves a 4KB DTCM safe zone to prevent wiping Retro-Go's state and deduces the return intent from Retro-Go's `RESET` magic signature.
+- Integrated Retro-Go build and flash targets with optimized 224KB Bank 1 footprint, configurable OFW address, and automated variable passing.
+- Implemented RAM-boot architecture: Flash stub decompresses main launcher into AXI-SRAM, freeing ~7 KB of internal flash.
+- Refined boot hierarchy: 1. Physical overrides (LEFT/RIGHT for OFW, B for Retro-Go), 2. Safe SRAM signaling (protected via linker reservation), 3. Launcher default.
+- Modernized asset system: Replaced hash-lookup blob with direct C symbols for zero-overhead sprite drawing.
+- Hardened memory safety: Added region-bounds and alignment validation to boot jumps to prevent system crashes on corrupted memory.
+- Implemented `LZMA_ONESHOT` decoder optimization; freed 1.3 KB of internal flash.
+- Universal Asset System: Automated 'Cooker' pipeline (JSON to LZMA Super-Blob), unified `gui_draw_asset` API, and Sprite Viewer diagnostic.
+- Fixed Mario font corruption by expanding palette buffer and aligning memory.
+- Added authentic Zelda II Link walking animations and corrected grid-aware flipping.
+- Consolidated ~70 redundant debug/asset scripts onto the shared `scripts/common/` library + 7 parameterized tools (`inspect_gfx`, `extract`, `render`, `assets`, `romcheck`, `findtiles`, `capture`).
+- Modularized menu rendering for the Mario and Zelda themes; switching theme reloads the menu.
+- Menu background animations: four parallax clouds and a back-and-forth walking Yoshi.
+- Zelda asset pipeline: tileset analysis/extraction scripts, version-controlled `zelda_tiles_v3.json`, and Zelda II walking-Link extraction from CHR-ROM.
+- Mario SMB1 player-sprite and day-palette (compressed_memory) extraction.
+- Replaced `sprintf` with lightweight string-formatting helpers; dropped `<stdio.h>`.
+- `flash.c` cleanup, dead-file/header removal, and verified chainloader size reduction on device.

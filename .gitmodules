@@ -1,0 +1,16 @@
+[submodule "gnwmanager"]
+	path = gnwmanager
+	url = git@github.com:slash-proc/gnwmanager.git
+	branch = extflash_offset
+	ignore = dirty
+
+[submodule "retro-go-sd"]
+	path = retro-go-sd
+	url = git@github.com:slash-proc/game-and-watch-retro-go-sd.git
+	branch = configurable-ofw-address
+[submodule "deps/littlefs"]
+	path = deps/littlefs
+	url = https://github.com/littlefs-project/littlefs.git
+[submodule "deps/FatFs"]
+	path = deps/FatFs
+	url = https://github.com/sylverb/FatFs.git

@@ -1,0 +1,102 @@
+# External flash size in MB (minimum 16MB required for dual-boot layouts)
+EXTFLASH_SIZE ?= 64
+
+ifeq ($(shell test $(EXTFLASH_SIZE) -lt 16 && echo "fail"),fail)
+$(error EXTFLASH_SIZE must be at least 16 (got $(EXTFLASH_SIZE)))
+endif
+
+# Flashing targets using gnwmanager
+flash_chainloader: all
+	@echo "Ensuring device is unswapped..."
+	-python3 scripts/debug/bank.py unswap --halt
+	@echo "Flashing chainloader..."
+	gnwmanager flash bank1 $(BUILD_DIR)/$(TARGET).bin
+	gnwmanager start bank1
+	-$(RESTORE_KEYSTONE)
+
+# --- Retro-Go Configuration ---
+# All variables prefixed with RG_ are automatically passed to the retro-go-sd build.
+# The RG_ prefix is stripped when passing to the child Makefile.
+RG_DEBUG ?= 0
+RG_INTFLASH_BANK ?= 1
+RG_INTFLASH_ADDRESS ?= 0x08008000
+RG_OFW_ADDRESS ?= 0x08100000
+RG_FLASH_LENGTH ?= 224k
+RG_SD_CARD ?= 1
+RG_EXTFLASH_OFFSET ?= 8388608
+RG_EXTFLASH_SIZE_MB = $(if $(filter 1,$(RG_SD_CARD)),$(EXTFLASH_SIZE),$(shell echo $$(( $(EXTFLASH_SIZE) - 8 ))))
+RG_FILESYSTEM_SIZE ?= $(if $(filter 1,$(RG_SD_CARD)),$(shell echo $$(( $(EXTFLASH_SIZE) * 1024 * 1024 - $(RG_EXTFLASH_OFFSET) ))),4194304)
+RG_DISABLE_SPLASH_SCREEN ?= 1
+RG_COMPRESS ?= 0
+RG_SINGLE_FONT ?= 1
+RG_ENABLE_SCREENSHOT ?= 0
+RG_COVERFLOW ?= 0
+RG_CHEAT_CODES ?= 0
+RG_RG_PROFILING ?= 0
+RG_RG_DEBUG_ALLOC ?= 0
+RG_EXTFLASH_FORCE_SPI ?= 0
+# Languages
+RG_ES_ES ?= 0
+RG_PT_PT ?= 0
+RG_FR_FR ?= 0
+RG_IT_IT ?= 0
+RG_RU_RU ?= 0
+RG_DE_DE ?= 0
+RG_JA_JP ?= 0
+
+# Extract all RG_ variables, strip the RG_ prefix, and format as VAR=VALUE
+# We use a static list to avoid recursion if RG_VARS itself is in .VARIABLES
+RG_VARS = $(foreach v,$(filter RG_%,$(.VARIABLES)),$(if $(filter-out RG_VARS,$(v)),$(subst RG_,,$(v))=$($(v))))
+
+build_rg:
+	@echo "Building Retro-Go with: $(RG_VARS)"
+	$(MAKE) -C retro-go-sd -j$(shell nproc) $(RG_VARS) all littlefs_image
+
+build_rg_sd:
+	$(MAKE) build_rg RG_SD_CARD=1
+
+flash_rg: build_rg
+	@echo "Flashing Retro-Go binaries (SD_CARD=$(RG_SD_CARD))..."
+	@if [ "$(RG_SD_CARD)" = "1" ]; then \
+		gnwmanager flash $(RG_INTFLASH_ADDRESS) retro-go-sd/build/gw_retro_go_intflash.bin \
+			-- flash ext retro-go-sd/build/littlefs.bin --offset=$(RG_EXTFLASH_OFFSET) \
+			-- start $(RG_INTFLASH_ADDRESS); \
+	else \
+		gnwmanager flash $(RG_INTFLASH_ADDRESS) retro-go-sd/build/gw_retro_go_intflash.bin \
+			-- flash ext retro-go-sd/build/frogfs.bin --offset=$(RG_EXTFLASH_OFFSET) \
+			-- flash ext retro-go-sd/build/littlefs.bin --offset=$$(($(EXTFLASH_SIZE) * 1024 * 1024 - $(RG_FILESYSTEM_SIZE))) \
+			-- start $(RG_INTFLASH_ADDRESS); \
+	fi
+	-$(RESTORE_KEYSTONE)
+
+flash_rg_sd:
+	$(MAKE) flash_rg RG_SD_CARD=1
+
+flash_mario: patch_mario
+	@echo "Flashing Mario patched binaries..."
+	gnwmanager flash ext $(BUILD_DIR)/patched_external_mario.bin --offset=0x400000
+	gnwmanager flash ext $(BUILD_DIR)/patched_internal_mario.bin --offset=0x7c0000
+	-$(RESTORE_KEYSTONE)
+
+flash_zelda: patch_zelda
+	@echo "Flashing Zelda patched binaries..."
+	gnwmanager flash ext $(BUILD_DIR)/patched_external_zelda.bin --offset=0x0
+	gnwmanager flash ext $(BUILD_DIR)/patched_internal_zelda.bin --offset=0x7e0000
+	-$(RESTORE_KEYSTONE)
+
+flash_all: all patch
+	@echo "Ensuring device is unswapped..."
+	-python3 scripts/debug/bank.py unswap --halt
+	@echo "Flashing chainloader and all patched firmware..."
+	gnwmanager flash bank1 $(BUILD_DIR)/$(TARGET).bin \
+		-- flash ext $(BUILD_DIR)/patched_external_zelda.bin --offset=0x0 \
+		-- flash ext $(BUILD_DIR)/patched_external_mario.bin --offset=0x400000 \
+		-- flash ext $(BUILD_DIR)/patched_internal_mario.bin --offset=0x7c0000 \
+		-- flash ext $(BUILD_DIR)/patched_internal_zelda.bin --offset=0x7e0000 \
+		-- start bank1
+	-$(RESTORE_KEYSTONE)
+
+.PHONY: flash_chainloader flash_mario flash_zelda flash_all
+
+
+

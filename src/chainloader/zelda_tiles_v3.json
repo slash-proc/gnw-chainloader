@@ -1,0 +1,165 @@
+{
+  "dungeon_environment": {
+    "corners": {
+      "top_left": 0,
+      "top_right": 15,
+      "bottom_left": 160,
+      "bottom_right": 175
+    },
+    "walls_and_frames": {
+      "top_wall_border": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+      "left_wall_border": {
+        "left_wall_16": { "tile": "16.0", "vertical": true },
+        "left_wall_32": { "tile": "32.0", "vertical": true },
+        "left_wall_48": { "tile": "48.0", "vertical": true },
+        "left_wall_64": { "tile": "64.0", "vertical": true },
+        "left_wall_80": { "tile": "80.0", "vertical": true },
+        "left_wall_96": { "tile": "96.0", "vertical": true },
+        "left_wall_112": { "tile": "112.0", "vertical": true },
+        "left_wall_128": { "tile": "128.0", "vertical": true },
+        "left_wall_144": { "tile": "144.0", "vertical": true }
+      },
+      "right_wall_border": {
+        "right_wall_31": { "tile": "31.1", "vertical": true },
+        "right_wall_47": { "tile": "47.1", "vertical": true },
+        "right_wall_63": { "tile": "63.1", "vertical": true },
+        "right_wall_79": { "tile": "79.1", "vertical": true },
+        "right_wall_95": { "tile": "95.1", "vertical": true },
+        "right_wall_111": { "tile": "111.1", "vertical": true },
+        "right_wall_127": { "tile": "127.1", "vertical": true },
+        "right_wall_143": { "tile": "143.1", "vertical": true },
+        "right_wall_159": { "tile": "159.1", "vertical": true }
+      },
+      "bottom_wall_border": [161, 162, 163, 164, 165, 166, 167, 168, 169, 170, 171, 172, 173, 174],
+      "inner_wall_shading": [17, 18, 19, 20, 21, 22, 25, 26, 27, 28, 29, 30]
+    },
+    "doors_and_passageways": {
+      "open_door_top": [23, 24],
+      "stairs_down": [34, 199],
+      "stairs_up": [36],
+      "door_shutter_horizontal": [39, 40],
+      "door_shutter_vertical": [41, 42],
+      "bombable_wall_debris": [35],
+      "wall_slide_animation": [74, 75, 76, 77]
+    },
+    "decorations_and_hazards": {
+      "sand_trap_floor": [37],
+      "statue_head_entrance": [59, 60],
+      "columns_and_structures": [118, 119, 120, 121],
+      "water_channels": [130, 131, 132, 133],
+      "floor_direction_markers": [106, 107]
+    }
+  },
+
+  "items_and_inventory": {
+    "crystals": {
+      "red_crystal": { "tile": "44.0", "vertical": true },
+      "blue_crystal": { "tile": "44.1", "vertical": true }
+    },
+    "swords": {
+      "wooden_sword_green_hilt": { "tile": "122.0", "vertical": true },
+      "white_sword": { "tile": "125.1", "vertical": true },
+      "magical_sword": { "tile": "141.1", "vertical": true }
+    },
+    "potions_and_containers": {
+      "blue_potion": { "tile": "122.1", "vertical": true },
+      "empty_bottle": { "tile": "137.1", "vertical": true },
+      "healing_heart": [123]
+    },
+    "quest_items": {
+      "candle_blue": { "tile": "137.0", "vertical": true },
+      "triforce_piece": [104, 105],
+      "letter": { "tile": "124.1", "vertical": true },
+      "magic_key": { "tile": "125.0", "vertical": true },
+      "stepladder": [134, 135],
+      "power_bracelet": [136],
+      "hud_sword": { "tile": "138.1", "vertical": true },
+      "boomerang": { "tile": "139.1", "vertical": true },
+      "blue_arrow": { "tile": "139.0", "vertical": true },
+      "blue_boomerang": { "tile": "140.0", "vertical": true },
+      "bomb": { "tile": "140.1", "vertical": true },
+      "green_arrow": { "tile": "141.0", "vertical": true },
+      "dungeon_key": [38]
+    }
+  },
+
+  "vfx_and_ui_indicators": {
+    "hud_minimap_markers": {
+      "minimap_grid_pattern": [10],
+      "item_dot": [11],
+      "triforce_dot": [12],
+      "minimap_dot_left": { "tile": "13.1", "vertical": true },
+      "minimap_dot_right": { "tile": "14.0", "vertical": true }
+    },
+    "ui_item_boxes": {
+      "box_a_border_horizontal": { "tile": "235.0", "vertical": true },
+      "box_a_top_left_corner": { "tile": "235.1", "vertical": true },
+      "hud_box_letter_a": { "tile": "236.0", "vertical": true },
+      "box_a_upper_right_corner": { "tile": "236.1", "vertical": true },
+      "box_b_upper_left_corner": { "tile": "237.0", "vertical": true },
+      "hud_box_letter_b": { "tile": "237.1", "vertical": true },
+      "box_b_top_right_corner": { "tile": "238.0", "vertical": true },
+      "box_b_bottom_left_corner": { "tile": "238.1", "vertical": true }
+    },
+    "hud_life_hearts": {
+      "hud_arrow_dart": { "tile": "86.0", "vertical": true },
+      "hud_heart_full_centered": { "tile": "86.1", "vertical": true },
+      "hud_heart_half_centered": { "tile": "87.0", "vertical": true },
+      "hud_heart_empty_centered": { "tile": "87.1", "vertical": true },
+      "hud_heart_full_low": { "tile": "88.0", "vertical": true },
+      "hud_heart_half_low": { "tile": "88.1", "vertical": true },
+      "hud_heart_empty_low": { "tile": "89.0", "vertical": true },
+      "hud_heart_unclear": { "tile": "89.1", "vertical": true }
+    },
+    "particles_and_beams": {
+      "red_beam_fade": [50, 51, 52, 53],
+      "candle_fire_trail": [54, 55, 56],
+      "blue_beam_fade": [57, 58],
+      "spark_impact": [71, 72, 73],
+      "water_splash_particles": [82, 83, 84, 85],
+      "alternate_blue_beam_fade": [114, 115, 116, 117]
+    },
+    "entities": {
+      "fairy_animation": [90, 91],
+      "fairy_frame_1": [90],
+      "fairy_frame_2": [91],
+      "statue_1": [92],
+      "statue_2": [93],
+      "hud_fairy_icon": { "tile": "138.0", "vertical": true },
+      "fairy_left": { "tile": "190.0", "vertical": true },
+      "fairy_right": { "tile": "190.1", "vertical": true }
+    },
+    "corners_ui": {
+      "yellow_triangle_left": [81],
+      "yellow_triangle_right": [94]
+    }
+  },
+
+  "overworld_environment": {
+    "terrain_tiles": {
+      "water_pure": [176],
+      "sand_dirt": [192],
+      "stairs_down_overworld": [199],
+      "single_green_tree": [209],
+      "orange_guard": [210],
+      "graveyard_tombstone": [211],
+      "shoreline_curves": [212, 213],
+      "red_mountain_wall": [214],
+      "green_mountain_bush_boulder": [221]
+    },
+    "composite_structures": {
+      "brown_mountain_rocks": [177, 178, 179, 193, 194, 195],
+      "lake_water_edges": [180, 181, 182, 196, 197, 198],
+      "large_brown_tree_forest": [184, 185, 186, 200, 202],
+      "level_1_eagle_entrance": [187, 188, 189, 203, 204, 205],
+      "red_graveyard_mountains": [191],
+      "green_mountain_woods": [215, 216, 217, 218, 219, 220],
+      "white_mountain_peaks": [206, 207, 222, 223],
+      "raft_dock_bridge": [98, 99, 100, 101, 183],
+      "rocks_mountains_small": [102, 103],
+      "graveyard_rubble": [108, 109],
+      "shrubbery_shrink_animation": [66, 67, 68, 69, 70],
+      "green_guard": [201]
+    }
+  }
+}

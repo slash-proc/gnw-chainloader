@@ -1,0 +1,69 @@
+# --- Build output / artifacts ---
+/build/
+*.elf
+*.bin
+*.hex
+*.map
+disasm.txt
+memory_dump*
+*.mp4
+
+# --- Project-specific ---
+notes/
+example projects/
+/backup/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg
+*.egg-info/
+.eggs/
+dist/
+.Python
+*.so
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# --- Editors / IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*~
+*.sublime-workspace
+*.sublime-project
+
+# --- OS cruft ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# --- Temp / backup / logs ---
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.log
+
+# --- Tooling / agents ---
+.antigravitycli
+.claude

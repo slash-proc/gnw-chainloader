@@ -1,0 +1,13 @@
+patch: patch_mario patch_zelda
+
+patch_mario: $(BUILD_DIR)/gw_patch_mario.bin
+	@echo "Applying patch via python script for mario..."
+	python3 scripts/build/patch_firmware.py mario
+	-$(RESTORE_KEYSTONE)
+
+patch_zelda: $(BUILD_DIR)/gw_patch_zelda.bin
+	@echo "Applying patch via python script for zelda..."
+	python3 scripts/build/patch_firmware.py zelda
+	-$(RESTORE_KEYSTONE)
+
+.PHONY: patch patch_mario patch_zelda
