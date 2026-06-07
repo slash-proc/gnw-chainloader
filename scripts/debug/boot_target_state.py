@@ -13,6 +13,7 @@ board_console_type` as "bank 2 already holds the wanted OFW" and skips re-flashi
 the backup -- so a stale/mismatched console type is exactly what makes the wrong
 OFW boot. This dump makes that visible.
 """
+import struct
 import sys
 from pathlib import Path
 
@@ -22,8 +23,8 @@ from common import harness as h
 from gnwmanager.ocdbackend.openocd_backend import OpenOCDBackend
 
 EXTFLASH_BASE = 0x90000000
-MARIO_SPI_OFFSET = 0x007C0000
-ZELDA_SPI_OFFSET = 0x007E0000
+MARIO_SPI_OFFSET = 0x00520000
+ZELDA_SPI_OFFSET = 0x00500000
 OFW_INTERNAL_BASE = 0x08100000
 
 CONSOLE = {0: "NONE", 1: "MARIO", 2: "ZELDA", 3: "UNKNOWN"}

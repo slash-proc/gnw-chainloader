@@ -116,8 +116,11 @@ RUN apt-get update -y && \
         build-essential \
         ffmpeg \
         libusb-1.0-0 \
+        joystick \
+        usbutils \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-compile --no-cache-dir "setuptools<82" \
     && pip install --no-compile --no-cache-dir -r /requirements.txt -r /requirements-dev.txt \
     && rm -rf /requirements.txt /requirements-dev.txt /external \
     && gnwmanager install openocd

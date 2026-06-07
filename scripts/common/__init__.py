@@ -32,8 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # is pure host-side plumbing, not the hardware). GNWMANAGER_VERBOSITY=debug then surfaces
 # those drained lines + gnwmanager's own logs. setdefault so an explicit override still
 # wins, but the safe default is debug-everywhere. Set before any OpenOCDBackend is opened.
-os.environ.setdefault("GNWMANAGER_OPENOCD_DEBUG", "1")
-os.environ.setdefault("GNWMANAGER_VERBOSITY", "debug")
+#os.environ.setdefault("GNWMANAGER_OPENOCD_DEBUG", "1")
+#os.environ.setdefault("GNWMANAGER_VERBOSITY", "debug")
+# disabled for now to test recent cache drain fix
 
 # Make the vendored gnwmanager submodule importable (ZeldaGnW / MarioGnW / OpenOCDBackend).
 _GNWMANAGER = REPO_ROOT / "gnwmanager"

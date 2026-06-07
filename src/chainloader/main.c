@@ -16,6 +16,8 @@ volatile uint32_t g_boot_bench[BOOT_BENCH_N] __attribute__((used));
 volatile uint32_t g_scan_bench[SCAN_BENCH_N] __attribute__((used));
 #endif
 
+static void boot_idle_pump(uint32_t ms);
+
 static void app_early_logic(void) {
     /* --- LEVEL 1: PHYSICAL BUTTON OVERRIDES (God Mode) --- */
     
@@ -24,25 +26,34 @@ static void app_early_logic(void) {
     bool hold_right = board_check_button(BTN_Right_GPIO_Port, BTN_Right_Pin);
 
     if (hold_left || hold_right) {
+        /* We need OSPI initialized and the partition scanner started so that
+           total_ext_flash_size is set and memory-mapped reads are valid. */
+        board_ospi_init();
+        partition_scan_start();
+
         board_detect_console_type();
         const char *target_name = hold_left ? "Mario" : "Zelda";
         uint32_t spi_offset = hold_left ? MARIO_SPI_OFFSET : ZELDA_SPI_OFFSET;
 
         board_console_type_t target_console = hold_left ? CONSOLE_MARIO : CONSOLE_ZELDA;
-        bool ofw_ready = true;
-        if (board_console_type != target_console) {
-            /* Not the active OFW: flash it first. partition_flash_ofw draws a
-               progress bar via gui_refresh(), which busy-waits on LTDC vertical
-               blanking — so the display must be initialized first, otherwise it
-               spins forever (black screen). gui_init() is idempotent. */
-            board_init();
-            gui_init();
-            /* Refuses (and leaves Bank 2 untouched) if the backup/asset CRC check
-               fails. Don't jump to an unbootable Bank 2 — fall through to the
-               normal boot below so the launcher menu stays reachable. STABILITY
-               IS LAW: the menu must be reachable in every failure case. */
-            ofw_ready = partition_flash_ofw(target_name, spi_offset, 128 * 1024);
+        bool ofw_ready = false;
+
+        /* Refuses to boot or copy if the backup/asset CRC check fails. */
+        if (ofw_verify_by_spi(spi_offset)) {
+            ofw_ready = true;
+            if (board_console_type != target_console) {
+                /* Not the active OFW: flash it first. partition_flash_ofw draws a
+                   progress bar via gui_refresh(), which busy-waits on LTDC vertical
+                   blanking — so the display must be initialized first, otherwise it
+                   spins forever (black screen). gui_init() is idempotent. */
+                board_init();
+                gui_settle_hook = boot_idle_pump;
+                gui_init();
+                /* Flashes the verified backup into internal flash Bank 2. */
+                ofw_ready = partition_flash_ofw(target_name, spi_offset, 128 * 1024);
+            }
         }
+
         if (ofw_ready) {
         /* God-mode jumps straight into the OFW, skipping the menu path's
            SRAM_MAGIC scrub (main, below) and input_init()'s remote-shadow clear.
