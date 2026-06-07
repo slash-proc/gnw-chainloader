@@ -36,7 +36,7 @@ SRAM_MAGIC_TARGET = 0x2001FFFC    # jump target carried across the bank-swap res
 RG_MAGIC_ADDR     = 0x20000000    # Retro-Go "re-launch" cell (CORE / RESET)
 
 # --- Module pool (src/chainloader/system/loader.c) -------------------------
-MODULE_POOL_BASE  = 0x240C0000    # bump-allocator base; g_pool_next grows from here
+MODULE_POOL_BASE  = 0x24090000    # bump-allocator base; g_pool_next grows from here
 
 # --- Packed settings word layout (src/common/boot_magic.h) -----------------
 SETTINGS_SIG          = 0xA6

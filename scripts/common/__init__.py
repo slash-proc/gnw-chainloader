@@ -2,7 +2,7 @@
 
 This package is the DRY foundation for the consolidated debug tools in
 ``scripts/debug/`` (``extract.py``, ``assets.py``, ``inspect.py``, ``render.py``,
-``romcheck.py``, ``findtiles.py``, ``capture.py``). It centralises the
+``romcheck.py``, ``findtiles.py``, ``fastcap.py``). It centralises the
 logic that used to be copy-pasted across ~70 one-off scripts:
 
 - :mod:`flashio`  — flash/backup loading, decryption, and the known-offset registry.

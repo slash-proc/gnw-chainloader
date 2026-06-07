@@ -1,134 +1,160 @@
 # gnw-chainloader
 
-A bare-metal STM32H7B0 (Cortex-M7) chainloader for the Game & Watch handheld.
-
-It resides at `0x08000000` (Bank 1) and uses a **Dieted RAM-boot architecture**: a minimal bare-metal loader (flash stub) inflates the main application from an LZMA-compressed blob into AXI-SRAM. This maximizes space, allowing for rich features like exFAT support within the 40 KiB internal flash limit. It evaluates boot conditions on startup and headlessly jumps to either the patched Official Firmware (OFW) on Bank 2 or Retro-Go Launcher on Bank 1.
-
----
-
-## Key Features
-
-*   **Fast, display-off boot:** Near-instant cold boots. The display only initializes for the menu, recovery, or flashing, ensuring a standard Game & Watch power-on experience.
-*   **Automatic OFW Switching:** Hold **LEFT** or **RIGHT** at power-on to boot into Mario or Zelda OFW. The launcher automatically detects the active internal firmware and flashes the requested version from OSPI if necessary.
-*   **Pick what to launch from the menu:** A single **Launch** item cycles Retro-Go, Mario, or Zelda; press the A button to start the highlighted one (a game not currently in the swappable slot is flashed there first). The label and the whole menu appear in your chosen language.
-*   **Full Filesystem Support:** Includes a universal File Browser with **exFAT** support, Long File Names (255 chars), and hardware RTC timestamping for SD cards.
-*   **Themed menus:** Mario and Zelda menus with an animated cursor and background sprites drawn from the real game art, plus semi-transparent blending. The sprite themes load as an optional module; if it is absent the menu uses a plain colored theme and stays fully usable.
-*   **Main Menu Hiding:** The UI automatically fades out after 30 seconds of inactivity, leaving only the themed animations visible (ambient clock mode).
-*   **Retro-Go state preservation:** Reads Retro-Go's magic words to tell when it wants to return to its own launcher, and reserves a 4 KB DTCM Safe Zone so Retro-Go's in-progress game state survives the warm reset.
-*   **Toggle Fast-Boot Setting:** Configure the device via the Settings menu to bypass the chainloader and boot straight to Retro-Go on startup, with a dedicated hardware override (holding **PAUSE/SET** at boot) to return to the launcher.
-*   **On-screen Diagnostics:** Deep system info, bank-usage stats, and a **Partition Viewer** with non-blocking background flash scanning and secure deletion.
-*   **Multi-Language Menus:** The menu can be shown in 18 languages (English, German, French, Spanish, Italian, Portuguese, Dutch, Polish, Romanian, Russian, Ukrainian, Greek, Japanese, Simplified and Traditional Chinese, Korean, and the right-to-left Arabic and Farsi; English is the default). Pick one under **Settings → Language** and the whole UI switches and remembers the choice. For Arabic and Farsi the entire menu flips to read right-to-left. Only English is built into the firmware; every other language is a small data file on the device's storage, so English always works even if those files are absent. To add a language, copy its files into the SD card's `/i18n/` folder; on the next boot the device asks you to confirm ("Install N language(s) from SD?") before copying them into its own storage, then applies the new languages right away. The same on-demand installer also brings over new device modules from the SD card after a separate confirmation, and those take effect on the following boot.
-
----
-
-## Repository Structure
-
-*   **[src/chainloader/](src/chainloader/)**: Core chainloader codebase (clocks, LTDC GUI, OSPI flash driver, main boot orchestrator).
-*   **[src/patch/](src/patch/)**: The recovery hook and keypress-detection routines compiled and injected into the stock OFW binaries.
-*   **[src/common/](src/common/)**: Shared registers, flash control, and inline bank-swapping implementations.
-*   **[src/modules/](src/modules/)**: Loadable PIE modules (filesystem drivers, theme sprites, language packs) brought in on demand by the module loader.
-*   **[src/fastcap/](src/fastcap/)**: Framebuffer-capture codec used to stream the screen over the debug probe during development.
-*   **[scripts/debug/](scripts/debug/)**: Suite of JTAG/GDB debug and diagnostic utility scripts.
-*   **[gnwmanager/](gnwmanager/)**: Git submodule for the host command-line utility.
-*   **deps/**: Third-party vendored code (CMSIS, STM32 HAL, FatFs, LittleFS); not part of the chainloader proper.
+The **gnw-chainloader** is a bare-metal storage management, partition inspection, and multi-boot utility for the Game & Watch handheld. Located at `slash-proc/gnw-chainloader`, the project's primary goals are to establish an inviolable, stable boot path (guaranteeing the system always boots safely) and to provide a robust framework for memory and storage oversight. By leveraging a hardware bank-swapping technique and an extensible dynamic module plugin system, it enables a stable triple-boot configuration for users who possess legal copies of both official Nintendo firmware (OFW) binaries and Retro-Go, while allowing optional features (such as file browsers and audio players) to load dynamically from RAM.
 
 ---
 
 ## Getting Started
 
-### Prerequisites
+### 1. User-Populated Files
+Before building or flashing the project, you must populate specific directories with backups and ROM files:
 
-You need a modern version of the ARM GNU Toolchain (GCC 13+ is required), a host C compiler, a handful of command-line tools, and the project's Python dependencies installed on your host system:
+*   **OFW Firmware Backups (`backup/`):** Place your official stock dumps inside this directory. These files are required by the patching and flashing tools:
+    *   `backup/internal_flash_backup_mario.bin`
+    *   `backup/flash_backup_mario.bin`
+    *   `backup/internal_flash_backup_zelda.bin`
+    *   `backup/flash_backup_zelda.bin`
+*   **Retro-Go ROMs (`retro-go-sd/roms/`):** Place game ROM files in the appropriate subdirectory (e.g. `nes/` for NES games, `gb/` for Game Boy games, `sms/` for Sega Master System games) to package them for Retro-Go.
 
-*   **ARM GNU Toolchain:** Download and install `arm-none-eabi-gcc` from the official [Arm GNU Toolchain Downloads](https://developer.arm.com/Tools%20and%20Software/GNU%20Toolchain) page. Using package manager versions (such as `gcc-arm-none-eabi` from older `apt` repositories) is not recommended, as outdated compilers may lack optimizations required to fit the chainloader within the 40 KB flash limit.
-*   **Host tools:** `make`, a host `gcc` (for the on-host unit tests and small host helper tools), `xz` (LZMA compression of the chainloader payload), and `ffmpeg` (used by the capture and `fastcap` scripts to assemble recordings). `openocd` is installed for you by `gnwmanager install openocd`.
-*   **Python dependencies:** Install the build and tooling packages with:
+### 2. Turnkey Compilation & Flashing (Docker)
+The simplest and most reliable way to compile and flash the project is using **Docker**. This encapsulates the compiler, Python scripts, and dependencies inside a container, removing any host setup overhead.
+
+*   **Build and Flash Everything (SD Card variant):**
     ```bash
-    pip install -r requirements.txt        # core build + device tooling
-    pip install -r requirements-dev.txt    # optional: debug/capture tools (capstone, opencv, evdev)
+    make all-in-one-sd-docker
     ```
-*   **gnwmanager:** The PyPI `gnwmanager` is installed via `requirements.txt` above. You can verify it with:
+*   **Upgrade Launcher Only (preserves OFW, Retro-Go saves, and persistent files while updating chainloader and Retro-Go):**
     ```bash
-    gnwmanager --version
+    make upgrade-sd-docker
     ```
 
-A `Dockerfile` is provided as a turnkey alternative: it bundles the pinned ARM toolchain, all host tools, and the Python dependencies, so you can build inside the container instead of installing the above on your host.
+### 3. Native Compilation (Host Machine)
 
-
-### Cloning & Submodule Registration
-
-This project relies on a custom fork of `gnwmanager` containing flashing and offset-patching changes that are not currently merged into the official upstream repository. Therefore, `gnwmanager` is integrated as a local Git submodule (tracked on the `extflash_offset` branch). Note that if these changes are merged upstream in the future, this submodule will no longer be required and you will be able to use the standard official `gnwmanager` package directly.
-
-To clone the repository and initialize the submodule, run:
-
+#### Clone the Repository
+Cloning requires recursive submodule initialization:
 ```bash
-git clone --recurse-submodules https://github.com/your-username/gnw-chainloader.git
+git clone --recurse-submodules https://github.com/slash-proc/gnw-chainloader.git
 ```
+
+#### Install Toolchain and Host Dependencies (Debian/Ubuntu)
+1. Install system utilities and library dependencies:
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y make patch xz-utils build-essential libusb-1.0-0 ffmpeg git python3 python3-pip python3-venv
+   ```
+2. **ARM GCC Toolchain:** Download and extract the official [Arm GNU Toolchain](https://developer.arm.com/Tools%20and%20Software/GNU%20Toolchain) (GCC 13 or newer is required). Make sure the compiler binaries are added to your shell's `PATH`.
+
+3. **Python Virtual Environment Setup:** Configure and activate a virtual environment inside the repository directory:
+   ```bash
+   # Create a virtual environment inside the repository directory
+   python3 -m venv .venv
+
+   # Activate the virtual environment
+   source .venv/bin/activate
+
+   # Install required packages within the active environment
+   pip install -r requirements.txt
+   pip install -r requirements-dev.txt
+   ```
+
+#### Working with the Virtual Environment (`venv`)
+To run Python helper scripts or use `make` compilation targets natively, the virtual environment must be active in your current shell session. Always run:
+```bash
+source .venv/bin/activate
+```
+before running host commands in the repository. If you close the terminal or start a new shell, you must re-activate it. Once activated, dependencies (such as `gnwmanager` and packages for compiling fonts/assets) are loaded cleanly from the isolated `.venv` directory.
+
+#### Host Make Targets
+Run these targets with the virtual environment activated:
+*   **Build and Flash Everything:**
+    ```bash
+    make all-in-one-sd
+    ```
+*   **Launcher Upgrade (`upgrade-sd`):**
+    ```bash
+    make upgrade-sd
+    ```
+    *Note: This is a **non-destructive** update target that updates the chainloader and Retro-Go (including its internal flash image/`retrogo.crc`), while preserving the OFW, Retro-Go save files, and general persistent files (FAT and LittleFS partitions/modules remain untouched).*
+*   **Granular Targets:**
+    ```bash
+    make clean
+    make -j$(nproc)               # Compile the core launcher
+    make patch                    # Patch stock OFW binaries
+    make flash-all                # Flash chainloader and patched internal OFWs
+    make push-modules             # Deploy dynamic modules and language packs
+    ```
 
 ---
 
-## Build & Flashing Pipeline
+## Key Features
 
-Flashing configurations automatically enforce the chainloader's **40 KiB** flash ceiling (40,960 bytes) and clean up any dynamically generated submodule cache files.
+*   **Triple-Boot Multi-Boot System:** Boots and switches between three main targets: the custom Retro-Go launcher (in Bank 1), the patched stock Official Nintendo Firmware (OFW, Mario or Zelda Edition in Bank 2), and other external payloads. (Requires copy of both official firmware binaries and Retro-Go).
+*   **Fast Boot:** Near-instant boot with display off, preserving the stock Game & Watch power-up feel. LCD initializes only when opening the menu or performing diagnostic/management operations.
+*   **Dynamic Module Plugin System:** Runs optional modules (like custom themes, audio players, or filesystem utilities) dynamically from RAM, keeping the core system extremely compact.
+*   **Storage & Partition Inspection:** Features an on-screen Partition Viewer that scans and identifies internal/external flash regions and partitions.
+*   **File Manager:** A file browser for copying, pasting, and deleting files on internal partitions or external SD cards.
+*   **Multi-Language UI & Font Streaming:** Supports 18 languages with dynamic font loading from flash, including Right-to-Left (RTL) mirror support for Arabic and Farsi.
+*   **Authentic Game Themes:** Displays menus with sprites and color palettes extracted from stock firmware binaries.
 
-```bash
-# Always clean the workspace before building
-make clean
+---
 
-# Compile the chainloader (produces build/gnw_chainloader.bin)
-make -j$(nproc)
+## Repository Structure
 
-# Patch the stock Mario/Zelda OFW binaries (inject recovery hook, relocate assets to external flash)
-make patch
-
-# Flash the chainloader and both patched OFW binaries at once
-make flash_all
-
-# Flash only the chainloader to Bank 1
-make flash_chainloader
-
-# Build optimized Retro-Go binaries
-make build_rg
-
-# Flash Retro-Go internal, FrogFS, and LittleFS images
-make flash_rg
-```
-
-> [!NOTE]
-> You can configure a custom external flash size using the `EXTFLASH_SIZE` parameter (minimum `16`, defaults to `64` MB):
-> ```bash
-> make EXTFLASH_SIZE=16 flash_all
-> ```
+*   **[src/chainloader/](src/chainloader/)**: Core chainloader codebase (GPIO, clocks, LTDC driver, window manager, and boot orchestrator).
+*   **[src/patch/](src/patch/)**: Recovery hooks and input overrides injected into the stock OFW binaries.
+*   **[src/common/](src/common/)**: Registers, boot magic definitions, and hardware bank-swapping utilities.
+*   **[src/modules/](src/modules/)**: Relocatable PIE module plugins (filesystem drivers, theme sprite engines, and language subsystems).
+*   **[src/fastcap/](src/fastcap/)**: Framebuffer capture utility code.
+*   **[scripts/debug/](scripts/debug/)**: Hardware debugging, memory inspection, and profiling tools.
+*   **[gnwmanager/](gnwmanager/)**: Git submodule for host-to-device communication.
+*   **deps/**: Pinned third-party code (CMSIS, STM32 HAL, FatFs, and LittleFS).
 
 ---
 
 ## Design & Architecture
 
-For a detailed breakdown of internal memory partitioning, flash offsets, patching mechanisms, bank swap registers, and boot orchestrator flows, see **[DESIGN.md](DESIGN.md)**.
+For details regarding internal memory mapping, flash offsets, relocatable loader internals, and register-level operations, see **[DESIGN.md](DESIGN.md)**.
 
 ---
 
-## Credits & Acknowledgments
+## Related Projects & Libraries
 
-This project is built upon the incredible reverse engineering and homebrew work of the Game & Watch developer community.
+*   **[game-and-watch-bootloader](https://github.com/sylverb/game-and-watch-bootloader)**
+*   **[game-and-watch-retro-go](https://github.com/sylverb/game-and-watch-retro-go-sd)**
+*   **[game-and-watch-patch](https://github.com/brianpugh/game-and-watch-patch)**
+*   **[gnwmanager](https://github.com/brianpugh/gnwmanager)**
 
-### Development & Provenance Notes
-- **AI-assisted development:** This codebase was developed with substantial AI assistance. The architecture, integration, on-hardware debugging, and final review were directed by the author.
-- **Hardware bring-up:** The clock-tree, LCD (LTDC) panel timings, and OSPI flash configuration *values* were referenced from `game-and-watch-retro-go-sd`. These are hardware-dictated facts re-expressed in this project's own code — no source from that (GPL-2.0) project is included. See [LICENSE](LICENSE) for the full attribution breakdown.
+---
 
-### Related Projects
-- **[game-and-watch-bootloader](https://github.com/sylverb/game-and-watch-bootloader)**
-- **[game-and-watch-retro-go](https://github.com/sylverb/game-and-watch-retro-go-sd)**
-- **[game-and-watch-patch](https://github.com/brianpugh/game-and-watch-patch)**
-- **[gnwmanager](https://github.com/brianpugh/gnwmanager)**
+## Special Thanks
 
-### Special Thanks
+To the developers and reverse engineers who did the core reverse engineering and built the Game & Watch hacking community:
+*   Brian Pugh
+*   Sylver Bruneau
+*   Marian Muller
+*   Thomas Roth
+*   Kai Beckmann
 
-A very special thanks to the core developers and reverse engineers who did all the actual hard work in decoding the STM32H7 Game & Watch hardware, initially hacking it, and building the community around it:
-- **Thomas Roth ([stacksmashing](https://github.com/stacksmashing))** and **Kai Beckmann ([kbeckmann](https://github.com/kbeckmann))** for initially hacking the Game & Watch hardware and establishing the foundation for homebrew development.
-- **Brian Pugh ([BrianPugh](https://github.com/brianpugh))**
-- **Sylver Bruneau ([sylverb](https://github.com/sylverb))**
-- **Marian Muller ([marian-m12l](https://github.com/marian-m12l))** — whose `game-and-watch-patch` fork is the source of the bank-swapping technique reimplemented in `src/common/banks.h`, and the reference `src/patch/main.c` is derived from.
+---
 
+## Development Notes
 
+### Re-Purposed Code
+*   **Display & Clock Parameters:** The clock tree configuration, LCD timings, and OSPI registers were referenced and adapted from `game-and-watch-retro-go-sd` to match the STM32H7 hardware specifications.
+*   **Bank-Swapping & Patches:** The hardware bank-swapping register sequence and stock OFW patching hooks were re-purposed from Marian Muller's `game-and-watch-patch` fork.
 
+### Third-Party Libraries
+*   **FatFs:** FatFs FAT file system module used for SD card reads/writes (ChaN).
+*   **LittleFS:** littlefs file system used for internal flash read/write access (ARM).
+*   **miniz / tinfl:** Streaming inflate decompression algorithm used for PNG images (Rich Geldreich).
+*   **TJpgDec:** Tiny JPEG Decompressor used for JPEG images (ChaN).
+*   **minimp3:** Minimal MP3 audio decoder (lieff).
+*   **LZMA SDK:** LZMA decompression routines used for asset unpacking (Igor Pavlov).
+*   **STM32H7 HAL & CMSIS:** Device drivers and registers (STMicroelectronics).
+
+### Fonts
+*   **Fusion Pixel:** A pixel font used for ASCII, Japanese, Chinese, and Korean scripts (takwolf, SIL OFL 1.1).
+*   **Vazirmatn:** A Persian/Arabic outline font used for Arabic and Farsi scripts (Rastikerdar, SIL OFL 1.1).
+
+### Engineering & Review
+*   **AI-Assisted Engineering:** The software architecture, relocatable module loader interfaces, on-hardware debugging routines, and translation layout engine were designed and iterated with substantial AI assistance.

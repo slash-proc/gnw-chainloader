@@ -1,738 +1,412 @@
 # gnw-chainloader Design and Architecture
 
-This document describes the goals and architecture of **gnw-chainloader** and documents how each design concept maps to the shipped implementation. Each numbered section below pairs a brief **Overview** (the idea) with an **Implementation** (how the code actually does it).
+This document describes the design, priorities, memory architecture, and API surfaces of **gnw-chainloader**, detailing how high-level specifications map to the actual codebase.
 
 ---
 
-## Project Goals
+## 1. Project Priorities & Core Invariants
 
-These overarching goals are the backbone shared by three documents: the [README](README.md) states them in plain language, this file pairs each with its architecture, and [ACTIVE_WORK.md](ACTIVE_WORK.md) tracks the live tasks and debugging under each. Status reflects the current state, not the final intent.
+The architecture is built around two primary engineering priorities, which govern all other feature implementations:
 
-0. **External Flash (OSPI) Chip Detection** *(completed)* — Resolved hardware probing failure by matching working bootloader initialization; correctly identifies chip size.
-1. **Headless, button-driven boot** *(completed)* — Boot target instantly with display off; optimized 128KB LZMA dictionary allows complex OFW switching logic to reside in the compressed app image while keeping cold boots near-instant (§5).
-2. **Dual-boot via bank swap** *(completed)* — Run the stock OFW (Bank 2) and Retro-Go (Bank 1) side-by-side via the `SWAP_BANK` option bytes. Once swapped into the OFW, operation is clean (§6).
-3. **Recovery hook** *(completed)* — Always escape a booted OFW back to the launcher: **START** at boot or **LEFT + GAME** in-game forces a bank unswap (§4).
-4. **Themed menu with authentic game art** *(completed)* — Render Mario & Zelda menu themes from sprites and palettes extracted from the real game ROMs (§7). Uses one shared mixed-case Fusion Pixel 12px monospaced font across all themes (see §12) for stability and space efficiency. 
-5. **On-screen diagnostics & system info** *(completed)* — SURFACES battery state, flash-bank utilization, FPS, and boot magic cells. Includes a full Partition Viewer and File Browser for deep system exploration.
-6. **Power management** *(completed)* — Unified power button handling and a 30-second inactivity timeout that hides the main menu UI while keeping themed background animations active.
-7. **Read-only File Browser** *(completed)* — Dynamically browse any detected filesystem partition (LittleFS, FAT/exFAT) from the launcher; FrogFS partitions are recognized + sized but not browsable. Supports long filenames (255 chars) and exFAT SD cards (§11).
-8. **Boot resilience hardening** *(completed)* — Launcher reaches the main menu regardless of flash state. Protected Retro-Go warm resets via a 4KB DTCM Safe Zone and stub-level direct-jumps (§9).
-9. **Filesystem Integration & Dynamic Theming** *(completed)* — Full read-write LittleFS for user configs and themes, FrogFS partition recognition (size only, not browsable), and FatFS with exFAT/RTC for SD-card file listing (§11).
-10. **Internationalized UI** *(completed)* — Every menu string is translatable, including non-Latin scripts. A mixed-case Fusion Pixel 12px monospaced font replaces the uppercase-only 8px font; translations (`.lang`) and per-script glyph fonts (`.fnt`) live on the device filesystem and are selected live under Settings, with English/ASCII as the always-present fallback (§12, [docs/i18n.md](docs/i18n.md)).
+### Priority 1: Inviolable Boot Path (Stability is Law)
+The chainloader must always reach the launcher menu regardless of the state of external flash, bank configurations, or corrupt secondary firmware slots. To enforce this:
+* **Flash Stub as Anchor of Trust:** Every byte in `stub_main.c` is uncompressed and statically linked. The logic is kept minimal to reserve space for the compressed application image.
+* **Warm-Reset Return-to-Menu:** When a guest application (like Retro-Go) exits via a warm reset, it signals its intent by writing to the **RG magic cell** (`RG_MAGIC_ADDR` = `0x20000000` at the start of DTCM). 
+  - `BOOT_MAGIC_RESET` (`0x1FA1AFE1`) is consumed by the stub (`stub_main.c`).
+  - `BOOT_MAGIC_RETROGO` (`"CORE"` / `0x434F5245`) is consumed early in the main app (`main.c` `app_early_logic()`).
+  - Both signals **must unconditionally bypass the chainloader menu and re-launch Retro-Go** by jumping directly to `RETROGO_BASE` (`0x0800A000`). This prevents loops or accidental drops into the menu during warm transitions. The only escape is holding **START/PAUSE** at boot, which overrides these checks and forces the menu.
+* **OFW Integrity Gates:** Before bank-swapping into the Official Firmware (OFW) in Bank 2, the chainloader uses the hardware CRC unit to verify the integrity of the Bank 2 backup image and the external assets block. A mismatch prevents erasing or swapping, falling forward to the menu.
+
+### Priority 2: Memory & Storage Management with Extensible Plugin Framework
+The primary goal of the project is to serve as a highly capable memory and storage oversight, inspection, and management tool. Rather than locking the firmware into a rigid monolithic structure, it utilizes a highly extensible dynamic module plugin system (relocatable PIE binaries). 
+
+Features such as SD card access, LittleFS/FAT partition writing, file browsers, audio players, and visual theme assets are implemented as dynamic, optional plugins layered on top of this extensible foundation. This keeps the core lightweight, modular, and boot-resilient.
+
+*Note: The project is pivoted towards units with expanded memory storage configurations; standard non-modded internal flash is currently unsupported due to the space requirements of running the Retro-Go launcher alongside the diagnostic and module frameworks.*
 
 ---
 
-## 1. Memory Partitioning Strategy
+## 2. Memory Partitioning Strategy
 
-### Overview
-To enable side-by-side coexistence of the Official Firmware (OFW) and Retro-Go, the internal flash is divided into two banks. Bank 1 hosts the chainloader and Retro-Go launcher, while Bank 2 hosts the stock official firmware. Because the OFW expects to execute at the start of flash (`0x08000000`), a hardware bank swap is used to boot it, making Bank 2 appear at `0x08000000`.
+### Internal & External Flash Map
+To allow side-by-side execution of the OFW and Retro-Go, the internal flash is split into two banks. Bank 1 hosts the chainloader stub and the Retro-Go launcher. Bank 2 hosts the relocated stock OFW (statically linked for `0x08000000`, brought online via a hardware bank swap).
 
-### Implementation
-The memory map is hardcoded in the linker scripts and source code. This table is the **authoritative memory map** for the project; other documents reference it rather than duplicating it.
+#### Internal Flash Layout (Bank 1 & Bank 2)
 
-| Region         | Address      | Size      | Contents                                  |
-| :------------- | :----------- | :-------- | :---------------------------------------- |
-| Chainloader    | `0x08000000` | 40 KiB    | This chainloader (Bank 1)                 |
-| Retro-Go       | `0x0800A000` | 216 KiB   | Retro-Go Launcher payload (Bank 1)        |
-| OFW Internal   | `0x08100000` | 128 KiB   | Relocated Mario/Zelda OFW (Bank 2)        |
-| Free Flash     | `0x08120000` | 128 KiB   | Unused space (Bank 2)                     |
-| Ext. SPI Flash | `0x90000000` | ~16–64 MB | Backups, Retro-Go filesystems (see §2)    |
+| Region | Address | Size | Contents |
+| :--- | :--- | :--- | :--- |
+| **Chainloader Stub** | `0x08000000` | 40 KiB | Uncompressed flash stub + LZMA-compressed RAM-app payload (Bank 1) |
+| **Retro-Go Launcher** | `0x0800A000` | 216 KiB | Retro-Go Launcher payload (Bank 1) |
+| **OFW Internal** | `0x08100000` | 128 KiB | Relocated patched Mario/Zelda OFW (Bank 2) |
+| **Free Flash** | `0x08120000` | 128 KiB | Unused space (Bank 2) |
 
-The chainloader reservation was raised from 32 KiB to 40 KiB (`STM32H7B0_FLASH_STUB.ld`, `LENGTH = 40K`), so `RETROGO_BASE` moved to `0x0800A000` (`src/common/memory_map.h`) and the Retro-Go payload now spans 216 KiB (`RG_INTFLASH_ADDRESS` / `RG_FLASH_LENGTH` in `Makefile.common` match). The similarly named `STM32H7B0VBTx.ld` is the OFW patch linker script (§3), not the chainloader's.
+#### External SPI Flash Partition Map
+External SPI flash is memory-mapped starting at `0x90000000`. The offsets are contiguously aligned:
 
-The 40 KiB holds the uncompressed stub plus the LZMA-compressed RAM-app blob; the Makefile `Free space` line is the headroom metric. The app is compressed with an ARMTHUMB BCJ pre-filter then raw LZMA1 (`lc1/lp1/pb1`, 128 KiB dict), and `stub_main.c` reverses both at boot (`LzmaDecode` with props byte `0x37`, then `armthumb_unfilter()` in place). The encoder (Makefile xz call) and decoder (stub props + inverse BCJ) MUST stay in lock-step or the app will not decompress and the device will not boot. See [docs/size-optimization.md](docs/size-optimization.md) for the full pipeline, the LZMA dynamics, and the size-tuning methodology.
+| Offset | SPI Address | Size | Description |
+| :--- | :--- | :--- | :--- |
+| `0x00000000` | `0x90000000` | 4 MiB | Zelda Edition Block (External Assets) (`DEFAULT_ZELDA_EXT_BLOCK_OFFSET`) |
+| `0x00400000` | `0x90400000` | 1 MiB | Mario Edition Block (External Assets) (`DEFAULT_MARIO_EXT_BLOCK_OFFSET`) |
+| `0x00500000` | `0x90500000` | 128 KiB | Zelda Patched OFW Internal Flash Backup (`ZELDA_SPI_OFFSET`) |
+| `0x00520000` | `0x90520000` | 128 KiB | Mario Patched OFW Internal Flash Backup (`MARIO_SPI_OFFSET`) |
+| `0x00540000` | `0x90540000` | ~4.75 MiB | FAT Module Store (`MODULE_FAT_OFFSET`) |
+| `0x00A00000` | `0x90A00000` | 10 MiB | LittleFS (Themes, Configs, Language Packs) (`MODULE_LFS_OFFSET_SD`) |
+| `0x01400000` | `0x91400000` | (rest of chip) | Retro-Go ROM Cache (`RETROGO_CACHE_OFFSET`) |
 
-Bank structure:
+*Note: The Retro-Go ROM cache allocator is configured to keep its writes above `RETROGO_CACHE_OFFSET` (`0x01400000`) to protect the LittleFS, FAT store, and OFW backups from corruption.*
 
-*   **Bank 1 (`0x08000000` – `0x0803FFFF`):** chainloader (40 KiB, configured in `STM32H7B0_FLASH_STUB.ld`) followed by the Retro-Go Launcher (216 KiB).
-*   **Bank 2 (`0x08100000` – `0x0813FFFF`):** relocated stock OFW (128 KiB) followed by 128 KiB of free space.
+---
 
 ### Runtime RAM Map (SRAM)
 
-The MCU has ~1.4 MB of RAM across five banks. **Two hard rules decide where a buffer
-*must* go; everything else is free placement, arbitrated by lifetime** (buffers whose
-lifetimes never overlap may share an address range — that is the lever for fitting more
-into less).
+The STM32H7B0 contains ~1.4 MB of RAM across distinct regions. Memory placement is governed by two hardware constraints:
+1. **DMA Access:** Peripherals (like the LTDC display driver and SAI audio DMA) must reference AXI-SRAM (D1). They cannot reach the TCM regions.
+2. **SWD Cache Coherency:** Handshake cells accessed by the SWD debugger must reside in DTCM, bypassing the L1 D-Cache to remain coherent with the host probe.
 
-1. **A peripheral's DMA reads it → it must live in AXI-SRAM (D1).** The LTDC scans the
-   framebuffers out to the LCD over its own bus master, which reaches AXI, not the TCMs.
-   So `fb_a`/`fb_b` are non-negotiably AXI.
-2. **The SWD debugger must see it without a cache flush → DTCM.** DTCM bypasses the L1
-   D-cache, so the fastcap / remote-input / boot-magic handshake words sit at the top of
-   DTCM (`0x2001FFxx`) and stay coherent with the probe (see §9, §10.1, and the fastcap
-   cells in `memory_map.h`).
+```
+=============================================================================
+PHYSICAL RAM BANKS (1.4 MB TOTAL)
+=============================================================================
 
-| Bank | Base | Size | Access / use |
+[ ITCM: 64 KB ] @ 0x00000000  ===============================================
+  * Unused (Instruction Tightly-Coupled Memory)
+
+[ DTCM: 128 KB ] @ 0x20000000 ===============================================
+  0x20000000 +---------------------------------------------------+
+             | DTCM Safe Zone (Retro-Go persistent state)        | 4 KB
+  0x20001000 +---------------------------------------------------+
+             | Stub Heap / Stack Area                            | ~123.7 KB
+  0x2001FF00 +---------------------------------------------------+
+             | Fastcap Handshake Cells                           | 16 B
+  0x2001FFF4 +---------------------------------------------------+
+             | SWD Remote Input Shadow Cell                      | 4 B
+  0x2001FFF8 +---------------------------------------------------+
+             | SRAM Boot Magic & Target Address Registers        | 8 B
+             +---------------------------------------------------+
+
+[ AXI-SRAM: 1024 KB ] @ 0x24000000 ===========================================
+  0x24000000 +---------------------------------------------------+
+             | Main Application (.text, .data, .bss)             | ~521 KB
+             | Includes: Dual 320x240x2 Framebuffers (300 KB)    |
+  0x24082480 +---------------------------------------------------+
+             | Decompression Headroom / Free Gap                 | ~55 KB
+  0x24090000 +---------------------------------------------------+
+             | SRAM Module Pool (relocated PIE modules)          | 384 KB
+  0x240F0000 +---------------------------------------------------+
+             | Stack & Stack Guard Band                          | 64 KB
+             +---------------------------------------------------+ (Top: 0x24100000)
+
+[ D2 SRAM: 128 KB ] @ 0x30000000 ============================================
+  0x30000000 +---------------------------------------------------+
+             | AHB-SRAM1: Fastcap workspace, JPEGs, and tables   | 64 KB
+  0x30010000 +---------------------------------------------------+
+             | AHB-SRAM2: OFW patch workspace (idle in menu)     | 64 KB
+             | Borrowable by transient modules (scratch_get())   |
+             +---------------------------------------------------+
+
+[ D3 SRAM: 32 KB ] @ 0x38000000 =============================================
+  0x38000000 +---------------------------------------------------+
+             | SRD-SRAM: Battery-backed crash log                | 32 KB
+             +---------------------------------------------------+
+```
+
+---
+
+## 3. RAM-Boot & LZMA Compression Scheme
+
+To maximize physical flash space, the chainloader uses a **dieted RAM-boot architecture**. The uncompressed loader stub residing in flash initializes clocks/power, checks warm-reset magics, and immediately inflates the compressed main app into AXI-SRAM.
+
+### Distinct Compression Strategies
+To balance decompression speed, memory footprints, and space savings, the project utilizes two distinct LZMA compression parameters:
+
+1. **Main Application Image:**
+   * **Compression:** Raw LZMA1 pre-filtered with an ARMTHUMB BCJ pre-filter (`xz --format=raw --armthumb --lzma1=dict=128KiB,lc=1,lp=1,pb=1`).
+   * **Dictionary Size:** **128 KiB** (requires a larger decompressor heap, which fits comfortably in SRAM).
+   * **Decompression Props:** The stub passes `0x37` (lc=1, lp=1, pb=1) and a dict size of `0x00020000` to `LzmaDecode()`. After inflation, `armthumb_unfilter()` reverses the BCJ filter in place in AXI-SRAM.
+2. **OFW Patched Assets:**
+   * **Compression:** Standard LZMA without BCJ.
+   * **Dictionary Size:** **16 KiB** (tuned to conserve the very limited RAM workspace available when guest OFWs are running).
+   * **Decompression Props:** Decompressed by `assets.c` or the OFW patch payload (`src/patch/main.c`) using props `{0x5D, 0x00, 0x40, 0x00, 0x00}` (lc=3, lp=0, pb=2, dict size `0x00004000` = 16 KiB).
+   * **Optimization:** The chainloader builds the asset decoder in **one-shot mode** (`LZMA_ONESHOT`), stripping the streaming and lookahead machinery (`LzmaDec_TryDummy`) to save ~1.3 KB of flash.
+
+---
+
+## 4. Bank Swapping & OFW Recovery Hooks
+
+Because Nintendo's stock firmware binaries are statically linked for `0x08000000` and cannot execute from Bank 2 (`0x08100000`), the chainloader swaps physical banks in hardware to boot the stock firmware.
+
+### The Swap Sequence
+1. **Program Option Bytes:** The chainloader unlocks the flash option bytes, toggles the `SWAP_BANK` bit in `FLASH_OPTSR_PRG`, sets `FLASH_OPTCR_OPTSTART`, and waits for `FLASH_OPTSR_OPT_BUSY` to clear.
+2. **Target Register Persistence:** The destination boot target is written to the persistent SRAM magic cells (`0x2001FFF8` and `0x2001FFFC`). These cells are located at the top of DTCMRAM, which is explicitly reserved in the stub's linker script to prevent stack corruption across resets.
+3. **Reset:** The system triggers a reset via the SCB `AIRCR` register (`nvic_system_reset()`), causing Bank 2 to map to `0x08000000`.
+
+### Injected Recovery Hooks
+Once Bank 2 is active, the chainloader is dormant. To ensure the user can escape the OFW and return to the launcher, hooks are injected into the OFW binary at build time by the patch pipeline:
+* **Startup Escape:** The OFW reset vector is redirected to an injected `bootloader()` function. It configures the physical **START** button pin (GPIOC Pin 11) with a pull-up. If the button is held, it invokes `ensure_unswapped_banks()`, swapping the chainloader back to Bank 1.
+* **In-Game Escape:** The OFW's button reading routine (`read_buttons()`) is hooked. If **LEFT + GAME** are held simultaneously during gameplay, the hook writes `BOOT_MAGIC_FORCE` (`0x45435246`) to `SRAM_MAGIC_ADDR`, unswaps the banks, and triggers a system reset.
+
+---
+
+## 5. Virtual File System (VFS) & Relocatable Loader
+
+The chainloader decouples physical storage interfaces from application code using a lightweight Virtual File System (VFS) layer and on-demand PIE (Position Independent Executable) driver modules.
+
+### Filesystem Driver Architecture
+To conserve the 40 KiB flash ceiling, the core launcher contains only read-only directory enumeration code. All write and erase capabilities are deferred to dynamic modules loaded into AXI-SRAM:
+
+| Filesystem | Core Driver | Dynamic RW Driver (On-Device Path) | Purpose |
 | :--- | :--- | :--- | :--- |
-| ITCM | `0x00000000` | 64 KB | CPU instruction fetch; unused |
-| DTCM | `0x20000000` | 128 KB | CPU-only, **uncached** → app stack + SWD handshake cells |
-| AXI-SRAM (D1) | `0x24000000` | 1024 KB | CPU + DMA, cached → app, framebuffers, heaps, module pool |
-| D2 AHB-SRAM1 | `0x30000000` | 64 KB | CPU + D2 peripherals; **free** (its clock is off by default) |
-| D2 AHB-SRAM2 | `0x30010000` | 64 KB | used by the OFW *patch* (`PATCH_LDFLAGS`), idle while the menu runs |
-| D3 SRD-SRAM | `0x38000000` | 32 KB | **battery-backed** (VBAT); persists across reset/power → **crash log** |
+| **LittleFS** | Read-Only (via `-DLFS_READONLY`) | `/fs/lfs.bin` (built from `lfs_rw.bin`) | Manages user configs, themes, and language packs on external flash. |
+| **FatFS** | Read-Only Bootstrap (LFN off, CP437) | `/fs/fat.bin` (built from `fatfs.bin`) | Manages FAT/exFAT volumes on the SD card with full LFN support. |
+| **FrogFS** | Sizing/Scan only | *(None)* | Recognized in partition viewer; not browsable. |
 
-**AXI-SRAM (`0x24000000`–`0x24100000`) — three non-overlapping spans:**
+*Note: The dynamic driver `/fs/lfs.bin` disables OSPI memory-mapped mode to perform NOR page-programs and sector-erases, then restores memory-mapped mode.*
 
-```
-0x24000000  app: code + data, then .bss ................ ~521 KB USED
-              (the two 320x240x2 framebuffers alone are 300 KB of this)
-0x24082480  ── free gap ──.............................  ~55 KB  app/lzma headroom
-0x24090000  MODULE POOL  (bump-up from base; UI stack     384 KB  usable (−64 KB guard);
-              descends from _estack)                        residents ~91 KB (language ~52,
-                                                            fatfs ~20, lfs_rw ~17, theme ~2),
-0x24100000  _estack (top)                                   ~293 KB for one live feature
-```
+### Relocatable PIE Loader & Execution Models
+Dynamic modules (`/modules/`) are built as relocatable position-independent executables linked with a shared `module.ld` script. The loader (`system/loader.c`) supports two execution modes:
 
-**D2 AHB-SRAM1 (`0x30000000`–`0x30010000`, 64 KB) — fastcap owns the whole bank when live:**
-
-```
-0x30000000  tile-hash table  150 x u32 FNV-1a (per-tile change detect) ..  1 KB reserve
-0x30000400  YCC scratch      one 32x16 tile = 2 MCU, RGB565->YCbCr 4:2:0 .. ~8 KB reserve
-0x30002400  payload buffer   frame header + packed tile JPEGs ...........  47 KB cap
-0x3000E000  fastcap code     .text/.data/.bss (binary ~3.7 KB) .........   8 KB
-0x30010000  end of bank
-```
-
-Key facts that make this safe to reason about:
-
-- The **module pool is a bump allocator** (`system/loader.c`, `MODULE_POOL_BASE`): it
-  *reserves* the address range but only *consumes* what is loaded. Its size is driven by
-  module **code** size, never by filesystem content — the file browser uses fixed app
-  buffers (`fb_name_pool[32 KB]`, `file_entries[512]` in `ui_file_browser.c`), so a huge
-  directory costs zero pool.
-- **fastcap** (the live framebuffer-capture RAM app, §10) runs only while the menu is
-  live, so it must not touch the framebuffers, the resident theme module, or the pool's
-  growth path. It tiles the screen into 32×16 tiles, detects change with a per-tile
-  FNV-1a hash (no full-frame buffers), and hardware-JPEG-encodes only changed tiles at a
-  host-selectable quality (the `FASTCAP_QUALITY` cell, default 98; read at reinit). The
-  whole codec is placed in **D2 AHB-SRAM1 (`0x30000000`)** — isolated
-  from AXI by construction, so it can never re-collide. *(An earlier layout hardcoded
-  fastcap into `0x240A0000`+ and overwrote loaded modules → bus fault; that is the
-  cautionary tale this map exists to prevent.)*
-- **Module pool is 384 KB usable** (`MODULE_POOL_BASE = 0x24090000`; lowered from `0x240C0000`
-  (192 KB) into the free AXI gap below it so a feature module like the ~104 KB picture viewer
-  loads past the residents — that overflow, "Out of module memory", is what drove the change).
-  Modules are PIE relocated to the pool base, so it stays a one-constant change. With the resident
-  modules (~91 KB: language ~52 / fatfs ~20 / lfs_rw ~17 / theme ~2) and a 64 KB stack guard,
-  ~293 KB remains for the one live transient feature module. The 1 MB AXI-SRAM still has plenty
-  of room below; growing the pool further is the same one-constant change. The full tiered
-  module-memory design (this pool, the borrowed D2 scratch, and the planned OSPI XIP store) is in
-  [docs/memory-architecture.md](docs/memory-architecture.md).
-- **Crash log in D3 SRAM** (`0x38000000`, otherwise unused): the chainloader's `HardFault`
-  handler (`system/crash_log.c`) records the fault-status registers (HFSR/CFSR/MMFAR/BFAR) and
-  the stacked exception frame, then halts — so a fault can be diagnosed over SWD after the fact
-  with `scripts/debug/crash_log.py` (decodes the cause; `addr2line` on the captured PC pins the
-  source line). All configurable faults escalate to HardFault, so one handler catches them all.
-  Only ever runs on a fault, so the boot path is untouched.
-- Any new large buffer must be placed against this map — ideally derived from `_ebss` /
-  `MODULE_POOL_BASE` so an overlap fails at **build** time, not as a runtime bus fault.
+1. **Execute-in-Place (XIP) Model:**
+   * **Prerequisites:** Modules must be compiled with `-msingle-pic-base -mno-pic-data-is-text-relative` (preserving `r9` as the GOT pointer).
+   * **Execution:** The loader maps `.text` and `.rodata` directly to their contiguous memory-mapped external flash locations. Only the `.data`, `.got`, and `.bss` sections are copied into the SRAM module pool.
+   * **Invocation:** The core calls the module entry point via a naked trampoline (`call_feat_r9`) that loads the module's RAM GOT base into `r9` and restores the core's `r9` upon return.
+2. **Full RAM-Copy Model:**
+   * Used for `-fPIC` modules (which rely on PC-relative GOT mappings and cannot execute from non-contiguous text/data spaces) or if XIP is explicitly disabled. The entire binary is copied into the module pool and relocated.
 
 ---
 
-## 2. External Flash Mapping (SPI)
-
-### Overview
-External SPI flash (mapped to memory space starting at `0x90000000`) stores large read-only stock assets, persistent backups of the patched OFW internal flash, and the Retro-Go ROM/Save filesystems. The layout must support external flash sizes from 16 MB up to 64 MB.
-
-### Implementation
-The flash partitioning is handled via offset constants. The chainloader reads backups from these offsets to flash them to the internal bank:
-
-| Offset       | SPI Address  | Size         | Description                                                   |
-| :----------- | :----------- | :----------- | :------------------------------------------------------------ |
-| `0x00000000` | `0x90000000` | 4 MiB        | Zelda Edition Block (External Assets)                         |
-| `0x00400000` | `0x90400000` | 1 MiB        | Mario Edition Block (External Assets)                         |
-| `0x007C0000` | `0x907C0000` | 128 KiB      | Mario Patched OFW Internal Flash Backup (`MARIO_SPI_OFFSET`)  |
-| `0x007E0000` | `0x907E0000` | 128 KiB      | Zelda Patched OFW Internal Flash Backup (`ZELDA_SPI_OFFSET`)  |
-| `0x00800000` | `0x90800000` | 48 MiB       | Retro-Go FrogFS (Read-only ROMs)                              |
-| `0x03800000` | `0x93800000` | 8 MiB        | Retro-Go LittleFS (Writable — Saves/Configs/Themes)           |
-
-The offsets and the two FrogFS/LittleFS sizes above reflect the 64 MB default layout; on smaller parts (down to 16 MB) the build recomputes the FrogFS/LittleFS split.
-
-The sizes that are fixed regardless of flash capacity are: Zelda External Asset Block (4 MiB, `ZELDA_EXT_BLOCK_SIZE`), Mario External Asset Block (1 MiB, `MARIO_EXT_BLOCK_SIZE`), and the two 128 KiB OFW backups (`MARIO_SPI_OFFSET` / `ZELDA_SPI_OFFSET`, each `OFW_INTERNAL_SIZE`). FrogFS and LittleFS sizes are discovered at runtime — FrogFS reports its own size via the `bin_sz` field of its header, and LittleFS occupies the remaining space from FrogFS end to the end of extflash.
-
-The LittleFS partition serves as the chainloader's **read-write filesystem**: it holds user-defined themes (`/themes/*.bin`), persistent configuration, and any other chainloader-owned data. Theme binaries are described in §11.
-
-**SD layout: bounded LittleFS + the Retro-Go ROM cache.** `src/common/memory_map.h` is the single source of truth for these offsets. The SD-variant external flash is laid out, bottom to top:
-
-| Offset | Region |
-| :--- | :--- |
-| `0x000000` | Zelda / Mario asset blocks |
-| `0x500000` / `0x520000` | Zelda / Mario OFW backups (128 KiB each) |
-| `0x540000` | FAT module store (`MODULE_FAT_OFFSET`) |
-| `0xA00000` | **LittleFS** — `MODULE_LFS_SIZE` (10 MiB default, set by `Makefile.common` `LFS_SIZE`), butted against the FAT store (`MODULE_LFS_OFFSET_SD`) |
-| `0x1400000` | **Retro-Go ROM cache** — raw ROM/save circular cache, fills to end of chip (`RETROGO_CACHE_OFFSET`) |
-
-In the SD-card Retro-Go build the *firmware itself* never mounts the external-flash LittleFS (saves/config/screenshots go to the SD card); the chainloader owns it (themes, `/i18n` language packs + fonts, feature modules, the RW FS drivers). Launching a game copies the ROM from the SD card into the raw ROM-cache region via a round-robin allocator (`retro-go-sd/Core/Src/gw_flash_alloc.c`).
-
-The cache must never write below `RETROGO_CACHE_OFFSET`, or it would erase the LittleFS, the OFW backups, and the FAT store (none of which Retro-Go knows about). The chainloader passes `RETROGO_CACHE_OFFSET` to the Retro-Go build as `EXTFLASH_OFFSET`; the allocator keeps its writes above the **larger** of that (exposed to C as `__EXTFLASH_OFFSET__`) and `get_ofw_extflash_size()` (the active OFW's own footprint). The LittleFS sits *inside* this reservation, so the cache needs only a lower bound — no upper bound (the upstreamable Retro-Go change is simply "respect `EXTFLASH_OFFSET`"). The LittleFS is stored inverted (superblock at the top of its region); the Partition Viewer validates it at the fixed `0xA00000..0x1400000` span, registers a labeled `Retro-Go Cache` region above it, and skips the cache during the sweep (raw ROM bytes can false-match FS magics). Host LFS tools reach the relocated LittleFS via `lfs_gnwmanager_offset()` (`scripts/common/__init__.py`), which converts `RETROGO_CACHE_OFFSET` to the end-anchored offset gnwmanager expects.
-
-The Partition Viewer architecture supports:
-- **Non-Blocking Background Scanning:** A state machine performs incremental scan steps at startup without impacting menu responsiveness.
-- **Anchored Signature Detection:** Partitions are identified via unique data patterns at known internal offsets (e.g. 'CORE' for Retro-Go, 'ZELDA' NES headers).
-- **Inverted Layout Support:** Robustly detects LittleFS partitions stored backward from the end of flash by calculating the start address from anchored superblocks.
-- **Dynamic Footprint Scanning:** Scans internal banks in 16KB increments to determine the actual binary size of installed applications (e.g. Retro-Go).
-- **Partition Management:** Supports secure deletion of non-critical partitions with UI confirmation and progress tracking.
-
----
-
-## Architectural Evolution: Modular UI and System Services
-
-To support growing feature complexity (like the File Browser) while keeping the 40 KiB core small, the project uses a modular architecture that decouples low-level system services from high-level UI components and pushes optional features into loadable PIE modules (`src/modules/`).
-
-Key architectural pillars:
-- **Centralized System Services:** Global input tracking (`input.c`) and shared utility libraries (`utils.c`) eliminate boilerplate and logic duplication.
-- **Window/List UI Engine:** Screens are a stack of `ui_window_t` (`ui/ui.h`) drawn by a central event loop, with a shared `ui_list_t` widget (`ui/ui_list.h`) that provides split-pane lists, scrolling, value-selectors, and grey-out predicates.
-- **Service-Oriented Storage:** Flash management and partition discovery are isolated from the UI behind a VFS (`storage/vfs.c`), providing clean APIs for filesystem operations.
-- **Loadable PIE Modules:** Optional capability (filesystem drivers, theme sprites, language packs) ships as relocatable modules loaded on demand into a RAM pool, each with an in-core fallback so the menu is always reachable.
-
-The PIE module loader and the loadable drivers are documented in §5 (module map), §11, and §12, and in [docs/pie-module-loader.md](docs/pie-module-loader.md).
-
----
-
-## 3. OFW Patching & Asset Relocation
-
-### Overview
-Nintendo's stock firmware binaries are statically linked for the `0x08000000` base address, so they cannot simply run from the Bank 2 partition (`0x08100000`). Two approaches exist: *relocate* the image (rewrite every absolute pointer and the vector table for the new base), or leave it linked for `0x08000000` and use a hardware **bank swap** to map Bank 2 there at boot. This project takes the bank-swap route (see §6), so the build-time patches never shift the firmware's base — they only adapt the image to coexist with the chainloader, regain control, and free internal-flash space.
-
-### Implementation
-The OFW image is patched during the build phase by `gnwmanager`'s host-side engine (`make patch`, driven by [scripts/build/patch_firmware.py](scripts/build/patch_firmware.py)). The firmware's load base is **not** shifted — it stays linked for `0x08000000` and is brought online by the bank swap (§6), so no absolute-pointer or vector relocation is performed. The patch steps are:
-1.  **Decryption:** The OTFDEC-encrypted stock external flash is decrypted (`device.crypt()`) so assets can be relocated and read back later.
-2.  **Asset Relocation:** Bulky compressible assets (e.g. graphics and sleep images) are LZMA-compressed and moved out to external SPI flash, freeing internal-flash space for the injected hook. The external block's base is set by `offset_size` (`0x400000` for Mario, `0` for Zelda — matching the `flash ext --offset=` targets in `Makefile.common`), **not** an internal base shift.
-3.  **Hook Injection:** The recovery hook (compiled from [src/patch/main.c](src/patch/main.c)) is appended into the unused internal-flash tail past `STOCK_ROM_END`.
-4.  **Reset-Vector Redirect:** The reset vector is rewritten to point at the injected `bootloader()` hook (see §4) instead of the stock reset handler. (The entry symbol is named `bootloader` so the patch builds against unmodified `gnwmanager`, whose script does `replace(0x4, "bootloader")`; the resulting reset-vector value is unchanged — `0x08018101` Mario, `0x0801B3E1` Zelda.)
-5.  **Warm-boot power-on patches:** Two byte-patches per firmware make the stock OFW boot normally after a *warm* reset (our bank swap into the OFW), not only a power-button power-on — see [docs/ofw-poweroff-on-warm-switch.md](docs/ofw-poweroff-on-warm-switch.md). They NOP the OFW's `PWR_CPUCR.SBF` boot-mode gate (so display init always runs) and turn the in-loop "state-6" standby branch into an unconditional skip. Without them, a warm switch left the screen dark until a manual power-button press.
-
-### OFW Integrity Verification (CRC gate)
-
-The chainloader copies an OFW backup from external flash into Bank 2 and boots it. A backup is *recognized* only by its reset vector (`0x08018101` Mario / `0x0801B3E1` Zelda), with no integrity check — so a wiped, corrupt, half-flashed, or merely *unpatched* image (stock, or built by a different/older patch) is indistinguishable from a good one and would bank-swap into a console that cannot boot or return to the launcher. To close that gap the patch pipeline bakes a CRC-32 signature of each image, and the chainloader re-checks it before every copy.
-
-**Baked signatures.** [scripts/build/gen_ofw_crc.py](scripts/build/gen_ofw_crc.py) (`make ofw-crc`, after `make patch`) computes, from the deterministic patch outputs, a per-console record holding two CRCs and writes them to the committed header `src/common/ofw_crc.h`:
-- **internal_crc** — the full 128 KiB backup image (`patched_internal_<game>.bin`), the bytes copied into Bank 2.
-- **asset_crc** — the *static* window of the external asset blob (`patched_external_<game>.bin`), i.e. the immutable ROM/code/asset region with the runtime-mutable **save regions excluded** (otherwise playing a game would change the CRC). The windows are: Mario `[0, blob_len − 0x2000)` (the 8 KiB NVRAM is always the trailing slice of the shortened blob — see `mario.py`); Zelda `[0x20000, 0x3254A0)` (the stock encrypted span; saves live before `0x20000` and after `0x3E0000`, and Zelda is never shortened).
-
-The two CRCs together form a **pairing**: a boot is allowed only when both the backup image and the asset blob it will reach for match the *same* baked record, so a mismatched internal/asset combination is also rejected. The values are device-invariant (stock ROMs are SHA1-pinned, saves excluded), so this is a once-per-patch commit, not part of the normal build.
-
-**CRC convention.** The STM32H7 hardware CRC unit in its reset-default configuration (poly `0x04C11DB7`, init `0xFFFFFFFF`, 32-bit, no input/output reflection — CRC-32/MPEG-2), fed one little-endian 32-bit word at a time. `gen_ofw_crc.py` models that operation exactly, so host and device agree by construction (the specific polynomial is irrelevant — it is a shared integrity token).
-
-**Device gate.** [src/chainloader/system/ofw_verify.c](src/chainloader/system/ofw_verify.c) drives the hardware CRC unit (`ofw_crc32`) over the mapped external-flash regions. `ofw_verify_by_spi()` is called at the top of `partition_flash_ofw()` *before* erasing Bank 2; on any mismatch (or a region past the detected flash, or an unknown offset) it refuses, leaves Bank 2 untouched, and the caller stays in the menu — both the menu A-press (`menu.c`) and the boot-time god-mode LEFT/RIGHT override (`main.c`) honor the refusal, falling through to the launcher rather than jumping to an unbootable Bank 2 (STABILITY IS LAW). `ofw_verify_addr()` lets the Partition Viewer mark a recognized-but-mismatched OFW/asset region as `UNKNOWN` (computed once per selection — the CRC sweep is too heavy for a per-frame draw). Retro-Go is not covered by this gate.
-
----
-
-## 4. OFW Recovery Hook
-
-### Overview
-When the OFW is booted, Bank 2 is swapped to `0x08000000` and the chainloader becomes dormant in Bank 2. To prevent the user from being locked into the stock firmware, a safety hook must be embedded inside the OFW image. This hook should intercept the boot sequence to swap banks back to normal if a physical button (e.g., **START**) is held, or if a specific key combination is pressed during gameplay.
-
-### Implementation
-The recovery mechanism is compiled from [src/patch/main.c](src/patch/main.c) (using the linker script [src/patch/STM32H7B0VBTx_FLASH.ld](src/patch/STM32H7B0VBTx_FLASH.ld)) and injected into the OFW binary:
-*   **Startup Check:** The OFW reset handler is redirected to the `bootloader()` function (the entry symbol our patch exports; see §3 step 4). It configures the START button pin (GPIOC Pin 11) with a pull-up, reads its state, and calls `ensure_unswapped_banks()` to swap the chainloader back to Bank 1 if the button is held.
-*   **In-Game Reset Combo:** The patch overrides the stock button reading routine (`read_buttons()`). If it detects **LEFT + GAME** held simultaneously, it sets the `CHAINLOADER_MAGIC_FORCE` (`0x45435246`) flag, swaps banks, and triggers a system reset to return to the launcher.
-
----
-
-## 5. Boot Flow and Module Map
-
-The chainloader uses a **Dieted RAM-boot architecture** to fit rich features into the 40 KiB internal flash limit. The boot logic is distributed between the uncompressed stub and the compressed app to maximize space:
-
-### 1. Flash Stub (Uncompressed Loader)
-A minimal loader resides at `0x08000000`. It performs bare-metal hardware setup and immediate decompressor handoff:
-
-1.  **Stage 1 — Safe Zone & direct-jump:** Checks the RG magic cell (`0x20000000`) for Retro-Go's warm-reset trace (`RESET`). If found, it jumps directly to `RETROGO_BASE` (always the define, never a literal — a stale `0x08008000` here once silently dropped to the menu) to **re-launch Retro-Go**, preserving its AXI-SRAM state. This is the "Return to Main Menu" path for a bank-1 Retro-Go, which bare-resets with only the `RESET` trace set.
-2.  **Stage 2 — Standby Check:** Performs the POR Standby check to prevent auto-booting on USB connection.
-3.  **Stage 3 — Inflation:** Inflates the main app from flash into AXI-SRAM using a one-shot LZMA decoder.
-
-### 2. RAM Application (Compressed Orchestrator)
-The complex boot hierarchy lives in the compressed `main.c`, which is linked for **AXI-SRAM** (`0x24000000`). This ensures that advanced logic (OFW switching, magic words) consumes minimal physical flash.
-
-1.  **Level 1 — Physical Override (God Mode):** Checked immediately upon app start.
-    *   **LEFT / RIGHT:** Identify active OFW; if mismatching the button, start OSPI and flash the requested OFW before booting.
-    *   **B:** Direct Retro-Go Boot Shortcut.
-    *   **START / PAUSE:** Force Launcher Menu.
-2.  **Level 2 — Software Intent (Magic Words):**
-    *   Handles Retro-Go's explicit "Return to Main Menu" marker (`CORE`) by **re-launching Retro-Go** (jump `RETROGO_BASE`); the `RESET` trace is caught earlier by the stub (Stage 1).
-    *   Checks for protocol-aware `BOOT` magic and target address in SRAM/RTC.
-3.  **Level 3 — Launcher Default:**
-    *   Proceeds to GUI initialization and the themed interactive menu.
-
-### Boot Resilience Invariants
-
-**Stability is the non-negotiable invariant of this project.** The chainloader must reach the launcher menu under any condition — empty Bank 2, absent external flash, stale SRAM magic, mid-operation reset.
-
-1. **The stub is the anchor of trust.** Every byte in `stub_main.c` is uncompressed; logic here is minimized to preserve space for the compressed payload.
-2. **AXI-SRAM is the volatile workspace.** Decompressing into AXI-SRAM allows for massive (128KB) LZMA dictionaries, which in turn enables large features like exFAT and LFN.
-3. **DTCM Safe Zone (4KB):** The first 4KB of internal DTCM RAM is reserved to protect Retro-Go save-state metadata and magic words from being overwritten during boot.
-4. **Target-Aware Logic:** To prevent unintended boots after a power cycle, the launcher only honors `BOOT` magic if the target address points to a valid execution region.
-5. **Failure must fall forward.** If a button-triggered or magic-triggered boot target is invalid, the orchestrator must always return to the launcher menu.
-
-### Module Map
-
-| File | Responsibility |
-|---|---|
-| `stub_main.c` | Uncompressed loader: Retro-Go `RESET` direct-jump, POR standby check, then LZMA inflation of the app into AXI-SRAM (the stub stages above). |
-| [main.c](src/chainloader/main.c) | RAM-app orchestrator: runs the button god-mode + magic-word boot priority (`app_early_logic`, the app levels above), then GUI init and `menu_run`. |
-| [board.c](src/chainloader/board.c) | Unified hardware drivers. `board_is_valid_app()` includes region-bounds and alignment validation. |
-| [assets.c](src/chainloader/assets.c) | Sprite drawing engine using direct-pointer generated symbols. |
-| [gui.c](src/chainloader/gui.c) | RGB565 LTDC display driver; double-buffered in AXI SRAM. |
-| [menu.c](src/chainloader/menu.c) | Interactive menu. Its top item is the unified boot selector (`boot_target_t`): LEFT/RIGHT cycle the bootable targets (Retro-Go in Bank 1, plus whichever OFW backups exist), A boots the shown one (flashing that OFW into Bank 2 first if it is not already there). Renders as a translated `LAUNCH: < target >` value selector, matching the THEME/LANGUAGE rows. |
-| [startup.s](src/chainloader/startup.s) | Reset handler and vector table. |
-| [system_stm32h7xx.c](src/chainloader/system_stm32h7xx.c) | `SystemInit` (runs before Stage 1/2); sets the `DBGMCU` keep-alive bits (§8). |
-| `deps/` | STM32 HAL drivers and CMSIS (third-party, mostly unmodified). |
-
-### ABI Gating
-
-Every dynamically loaded artifact is honored only when BOTH its magic and its ABI version match the running firmware. A mismatch in either direction means it was built for a different firmware and is rejected, falling back to safe defaults (a module is treated as absent; a language pack falls back to English), so a stale artifact left in the filesystem by a prior firmware cannot load and render garbage. Two independent contracts:
-
-- **Module-framework ABI** (`MODULE_ABI_VERSION`, `system/module.h`): gates every PIE module. `module_header_t` carries an `abi` field (plus a `flags` load-model field, below); `mod_load_image` (`loader.c`) and the multi-filesystem `vfs_read_module` (`vfs.c`) both reject a module whose `abi` mismatches. Bump it whenever the module/host-API contract changes.
-- **Strings ABI** (`STRINGS_ABI_VERSION`, `ui/strings.h`): gates `.lang` packs. The pack header carries its ABI, and the core's vfs lang functions enforce the **core's own** value (not one a module passes in), so a stale module and stale packs can no longer agree and load together.
-
-Both gates are factored into one header, `src/common/abi.h` (`module_abi_ok` / `pack_abi_ok`), called by the firmware gates **and** a host unit test (`scripts/build/test_abi_gate.c`, `make test_host`), so the test exercises the real check rather than a copy. An on-device test (`scripts/tests/test_abi_reject.py`, 6/6 on hardware) proves both gates reject a wrong-ABI dummy module and a mutated-ABI pack.
-
-**Load-model flag.** `module_header_t.flags` bit `MOD_FLAG_TRANSIENT` declares whether the core keeps a module **resident** in the RAM pool (it registered permanent callbacks, e.g. theme or language) or treats it as **transient** (load on demand, run, then reclaim its slot with `mod_pool_mark` / `mod_pool_reset`). Gating is recovery-critical and stays in-core. The **installer** (`/modules/installer.bin`) is the transient example: the core loads it on demand to install SD artifacts, then frees its slot. Its **install gate mirrors the loader's LOAD gate** (magic plus the running core's ABI for that artifact class, checked with the core's own ABI values), so it never commits an artifact the firmware could not then load.
-
----
-
-## 6. Bank Swapping Strategy
-
-### Overview
-To run the stock firmware without patching its vector references away from `0x08000000`, the MCU's `SWAP_BANK` option bytes must be modified, swapping the physical addressing of Bank 1 and Bank 2. The chainloader must handle this swap safely, using SRAM register persistence to keep track of the final boot target across the resulting hardware system resets.
-
-### Implementation
-The swap sequence is implemented using bare-metal register routines in [src/common/banks.h](src/common/banks.h) (called during `board_jump_to_app()`):
-1.  **Check Mapping State:** Compares current bank configuration using `FLASH_OPTSR_CUR`.
-2.  **Unlock & Program:** If a swap or unswap is required, the chainloader unlocks option bytes, writes the `SWAP_BANK` bit in `FLASH_OPTSR_PRG`, and writes `FLASH_OPTCR_OPTSTART` to execute.
-3.  **Launch Reset:** Checks option byte busy status (`FLASH_OPTSR_OPT_BUSY`), locks the option bytes, and triggers a system reset via the SCB `AIRCR` register (`nvic_system_reset()`).
-4.  **Target Persistence:** The target jump address is saved in SRAM magic cells (`0x2001FFF8` and `0x2001FFFC`) which survive the system reset. This location is explicitly reserved in the stub's linker script to prevent stack corruption, allowing the chainloader to complete the boot process once the banks are swapped.
-
----
-
-## 7. Deep Implementation Details
-
-### Asset Extraction & RWData Tables
-
-In patched OFWs (Mario/Zelda), assets like tilesets and fonts are often relocated and compressed to save space. The firmware uses an `rwdata` table mechanism to manage these blocks.
-
-**Table Structures:** Two related entry layouts appear, depending on which side walks the table.
-
-*Patch payload (`rwdata_inflate`, [src/patch/main.c](src/patch/main.c)) — 12-byte / 3-field entry:*
-| Offset | Type | Description |
-|---|---|---|
-| 0x0 | int32_t | **Relative Offset** from this entry to the compressed data start. |
-| 0x4 | int32_t | **Compressed Length** of the data block. |
-| 0x8 | uint32_t | **Target RAM Address** the data is decompressed/copied to. |
-
-*Chainloader Mario-palette lookup ([assets.c](src/chainloader/assets.c), table at OFW offset `0x180A4`) — 16-byte / 4-field entry:*
-| Offset | Type | Description |
-|---|---|---|
-| 0x0 | uint32_t | **Inflate function pointer** (present in the stock table; skipped by the chainloader). |
-| 0x4 | int32_t | **Relative Offset** from this field to the compressed data start. |
-| 0x8 | int32_t | **Compressed Length** of the data block. |
-| 0xC | uint32_t | **Target RAM Address** (e.g. `0x240F2124`, the Mario FreeMemory base). |
-
-**The Rebasing Challenge:**
-The OFW stores asset pointers as absolute `0x080xxxxx` addresses — correct for when it runs at `0x08000000` after the bank swap (§6). The chainloader, however, reads the OFW image from wherever it currently sits *unswapped*: the active internal copy at `0x08100000` (Bank 2), or an SPI backup at `0x90xxxxxx`. It must therefore rebase such a pointer onto the image's current location before dereferencing it ([assets.c](src/chainloader/assets.c) handles the Mario tileset pointer at OFW offset `0x7350`):
-- Source is the active OFW at `0x08100000`: add `0x100000` (e.g. `0x0800XXXX` → `0x0810XXXX`).
-- Source is an SPI backup at `0x90xxxxxx`: map to `source_fw + (ptr - 0x08000000)`.
-
-### LZMA Decompression
-
-The assets are compressed using LZMA (16KB dictionary). The chainloader builds the
-decoder in **one-shot mode** (`LZMA_ONESHOT`), which strips the streaming and
-lookahead machinery (`LzmaDec_TryDummy`) to save ~1.3 KB of flash. This mode
-requires the full compressed stream to be present in mapped memory and tolerates
- a small tail over-read by the range coder. The patch payload continues to use
- the full decoder. Decompression is performed into the back-buffer scratchpad
- during boot.
-
-### Asset and Sprite Management
-
-#### Overview
-The chainloader utilizes a unified, data-driven asset pipeline to manage themed UI elements (palettes and sprites) across different consoles (Mario/Zelda). To maintain a strict 40 KiB internal flash limit, the pipeline uses **usage-based dynamic cooking**, ensuring only those assets actually referenced in the source code are baked into the binary.
-
-#### Implementation
-
-**1. The Cooking Pipeline (`scripts/build/cook_assets.py`):**
-- **Symbol Discovery:** The script recursively scans the whole `src/` tree for `ASSET_` string literals to determine which assets are required. It scans all of `src/` (not just `src/chainloader/`) so that asset references in loadable modules compiled outside the core — notably the theme driver in `src/modules/theme/` — are seen; otherwise their sprites would be filtered out as "unused" and the module would fail to link.
-- **Dynamic Compilation:** Only discovered assets are extracted from the theme JSONs (`mario_tiles.json`, `zelda_tiles_v3.json`) and processed into the generated binary blob (`assets_gen.c`).
-- **Optimization:** Mario assets are cooked as compact tile indices rather than raw pixels, matching the Zelda implementation to save space.
-- **Standardized Fonts:** The pipeline does **not** extract fonts from the OFW. Instead, the firmware uses a clean, built-in Fusion Pixel 12px monospaced font for all themes (see §12), ensuring consistent character coverage and eliminating ROM-specific character mapping bugs.
-
-**2. Drawing Engine (`assets.c` / `gui.c`):**
-- **Unified Symbols:** Assets are defined as direct C symbols (`const uint8_t ASSET_NAME[]`) in the generated `assets_gen.h`, providing a clean interface.
-- **`gui_draw_asset(ASSET_POINTER, x, y)`:** Handles theme-agnostic drawing, supporting diverse layout strategies (grid/quadrant) transparently.
-- **Dynamic Palette loading:** Theme-specific palettes are still extracted from the stock OFW images at runtime and loaded into RAM buffers.
-
-#### Technical References
-
-**Zelda Asset Details**
-- **Clock Tileset:** 64KB 8bpp quadrant-based data at EXTFLASH `0x20000`.
-- **Palette:** Zelda Clock (BGRA) at `0x2E8B24`, Link NES colors at `0x2D8160`.
-- **Link Metasprites:** Extracted from Zelda II CHR-ROM Page 3 at `0xA8000`.
-
-**Mario Asset Details**
-- **Clock Tileset:** 64KB 8bpp grid-based data, LZMA-compressed in internal flash.
-- **Palette:** Day Palette at internal offset `0xCD54` (inside compressed_memory blob).
-- **NES Metasprites:** Extracted from SMB1 CHR-ROM at `0x408010`.
-
-## 8. OSPI Initialization and Stabilization
-
-### Overview
-The external OSPI flash chip (MX25U51245G) is sensitive to power sequencing, noise, and residual configuration states left by previous environments (e.g., debuggers or Retro-Go). The chainloader must ensure reliable communication from both a cold power-on and a warm reset without stalling the core boot process or causing BusFaults when reading fallback targets.
-
-### Implementation
-The OSPI initialization sequence in `board.c` and `flash.c` uses a verbatim copy of the proven Retro-Go flash driver and is meticulously aligned with the hardware-specific timings used in the `game-and-watch-bootloader` example:
-1.  **Early Power-Up:** The 1.8V and 3.3V power rails (PD1 and PD4) are initialized early in `board_early_init`. PD1 (active-low) is set to RESET to enable the 1.8V rail for the flash and LCD, followed by a 50ms stabilization delay.
-2.  **Hardware Alignment:** System clocks and OSPI peripheral settings (including OSPIM pin mappings and a 32-bit `DeviceSize`) are matched exactly to working examples to ensure stable communication.
-3.  **QPI Recovery:** The driver performs a multi-stage reset sequence (1-line SPI reset followed by a 4-line QPI reset) to force the chip into a known 1-line state before probing begins.
-4.  **Mapping Stability:** `board_ospi_init` ensures that the memory-mapped mode is always enabled after initialization. On probe success, the driver correctly identifies the Macronix 64 MiB chip (`C2 25 3A`) and sets the `flash.size` property, enabling reliable address-range calculation for the partition scanner.
-5.  **Dynamic Partition Scanning:** The partition scanner uses the `b"littlefs"` magic signature combined with on-flash superblock parsing (version, block size, block count) to dynamically calculate filesystem sizes, allowing the chainloader to support variable-sized Retro-Go installations.
-6.  **Persistent Debugging (`DBGMCU`):** `SystemInit` explicitly sets the `DBG_SLEEPCD`, `DBG_STOPCD`, `DBG_STANDBYCD`, `DBG_STOPSRD`, and `DBG_STANDBYSRD` bits in the `DBGMCU->CR` register. This ensures OpenOCD remains connected during low-power transitions.
-7.  **Power-On Reset (POR) Handling:** If the chainloader detects a Power-On Reset (`RCC_FLAG_PORRST`), it immediately enters Standby mode to prevent the device from turning on automatically when plugged into USB; it will only wake when the user presses the Power button (`WKUP1`).
-
----
-
-## 9. Boot Magic Values
-
-Magic words shared by the chainloader and the OFW patch. Most live in the SRAM magic cell (`0x2001FFF8`, jump target at `0x2001FFFC`); the two Retro-Go *return* signals (`CORE`, `RESET`) instead live in the **RG magic cell** (`0x20000000` = `RG_MAGIC_ADDR`), where Retro-Go leaves them, and both **re-launch Retro-Go** (jump `RETROGO_BASE`) rather than reaching the chainloader menu. Defined in [src/common/boot_magic.h](src/common/boot_magic.h).
-
-| Value | Meaning | Cell / target |
-|---|---|---|
-| `0x544F4F42` | "BOOT" — software jump request | `0x2001FFF8`; target at `0x2001FFFC` |
-| `0xFEDEBEDA` | Retro-Go standby resume | `0x2001FFF8`; jumps `RETROGO_BASE` (`0x0800A000`) |
-| `0x434F5245` | "CORE" — Retro-Go "Return to Main Menu" → re-launch Retro-Go | RG cell `0x20000000`; jumps `RETROGO_BASE` |
-| `0x1FA1AFE1` | "RESET" — Retro-Go warm-reset trace → re-launch Retro-Go | RG cell `0x20000000`; jumps `RETROGO_BASE` |
-| `0x5254524F` | "RTRO" — Toggle Fast-Boot magic | Defaults to `0x24000000` (Retro-Go) |
-| `0x00000000` | No magic / cold boot | Defaults to the menu |
-
-**Reliability & Persistence Features:**
-- **DTCM Safe Zone:** Retro-Go stores its persistent state (including the `CORE` and `RESET` signatures and save-state metadata) at the start of DTCM RAM (`0x20000000`). The chainloader's flash stub reserves the first 4KB of RAM to prevent wiping this state during the boot process.
-- **Protocol Deduction:** The chainloader deducess the return-to-menu intent by checking both the explicit `CORE` request and the implicit `RESET` trace left by Retro-Go's Bank 1 exit path.
-- **Stack Safety:** The boot stub's stack is linked to start below `0x2001FFF8`, ensuring that jump targets are never corrupted during the early boot phase.
-- **Target-Aware Logic:** To prevent unintended boots after a power cycle (where SRAM is randomized), the stub only honors the `BOOT` magic if the target address points to a valid execution region (Internal Flash, RAM, or SPI Flash).
-- **Cache Coherency:** The main application calls `SCB_CleanDCache()` before triggering a system reset to ensure magic words reach physical RAM.
-- **RTC Fallback:** The `BOOT` magic is also checked in the RTC backup register (`BKP0`) for protocol compatibility, though SRAM remains the primary high-speed signaling path.
-- **Fast-Boot Register (`BKP3`):** If the `BKP3` register contains the magic `"RTRO"` (`0x5254524F`), the chainloader skips the launcher menu and boots directly to Retro-Go. The user can bypass this and force entry into the launcher menu by holding the **PAUSE/SET** button (or **START**) at boot.
-
----
-
-## 10. Debugging & Inspection
-
-Device control and inspection run through the scripts in `scripts/debug/`; the conventions for using them are in GEMINI.md's Engineering Rules.
-
-**Key debug scripts:**
-- [scripts/debug/memory.py](scripts/debug/memory.py) — read/write/dump/compare/search target memory by address (`read`, `write`, `dump`, `compare`, `search` subcommands; addresses accept hex math like `0x0811AE70+0x301A5`). The workhorse for inspecting magic cells, vectors, and flash contents.
-- [scripts/debug/diagnostic.py](scripts/debug/diagnostic.py) — dumps the Program Counter (PC), LTDC register states, and a VRAM framebuffer snippet.
-- [scripts/debug/bank.py](scripts/debug/bank.py) — reads/sets the option-byte bank-swap state (e.g. `python scripts/debug/bank.py unswap --halt`).
-- [scripts/debug/boot_target_state.py](scripts/debug/boot_target_state.py) — dumps the unified boot selector's view of the world: the cached `board_console_type` against what Bank 2 and the external-flash OFW backups actually hold (reset vectors), and the resulting per-target `active_valid` (boot Bank 2 as-is vs re-flash the backup first). Explains boot-selector surprises and confirms both OFW backups are present and intact.
-- [scripts/debug/trace.py](scripts/debug/trace.py) — CPU control. `reset-halt` forces a hardware reset (and auto-unswaps banks) to recover a hung MCU / OpenOCD connection. `halt` halts the CPU **without** resetting and prints PC/SP — use this to freeze a hang and inspect it *before* the state is lost. Also `resume`, `step`, `until <addr>`, `watch <addr>`.
-- [scripts/debug/remote_control.py](scripts/debug/remote_control.py) — drive the on-device UI from your keyboard (or a real gamepad, via evdev) over the debug probe, CPU running. A thin front-end over the shared backend `scripts/common/remote_input.py`, which writes a button bitmask to the remote-input shadow cell (`0x2001FFF4`) that the firmware OR's into its live button state — so a keystroke is identical to a physical press (auto-repeat included). Lets a session navigate the menu, open the file browser, and trigger the Left+Game escape with no keyboard emulator or hardware mod. **Uses the `REMOTE_INPUT` hook, which is now compiled in by default** (opt out with `make REMOTE_INPUT=0`). See §10.1.
-
-**Reset / run after flashing:** `gnwmanager start bank1` starts the flashed chainloader; `python scripts/debug/bank.py unswap` unswaps the banks and resets. Prefer these over `gnwmanager info`, which is a last-resort connection-debug fallback.
-
-### 10.2 memory.py Usage & Reference
-
-The `memory.py` script ([scripts/debug/memory.py](file:///home/doug/Nerd/git/gnw-chainloader/scripts/debug/memory.py)) is a versatile diagnostic utility for inspecting and modifying memory-mapped registers, SRAM, internal flash, and external flash (OSPI) on the STM32H7B0 target.
-
-By default, the script halts the CPU before executing any subcommands and resumes it afterward. You can bypass this behavior with the `--no-halt` option to inspect a running target.
-
-#### Address Math
-All address arguments accept basic math expressions containing hex/decimal values and operators (`+`, `-`). This allows offsets to be specified directly relative to base addresses or symbols (e.g., resolving a symbol address from `arm-none-eabi-nm` and adding an offset):
-```bash
-python scripts/debug/memory.py read 0x0811AE70+0x301A5 8
+## 6. Window/List UI Engine & API Seams
+
+The user interface is built on a clean event-driven window stack and structured lists, exposing core rendering services to loaded modules.
+
+### The Window Manager (`ui_window_t`)
+Screens are modeled as a stack of windows managed in `ui_manager.c`. The active window intercepts button inputs and drives the LTDC refresh loop:
+
+```c
+typedef struct ui_window {
+    const char *title;
+    int16_t x, y, w, h;
+    uint8_t is_modal : 1;
+    uint8_t show_footer : 1;
+    uint8_t allow_idle_hide : 1;
+    uint16_t header_color; // 0 = default theme header color
+
+    void (*enter)(struct ui_window *self);
+    void (*draw_content)(struct ui_window *self);
+    void (*update_content)(struct ui_window *self);
+    void (*exit)(struct ui_window *self);
+
+    void *user_data;
+} ui_window_t;
 ```
 
-#### Subcommands
+### The List Widget (`ui_list_t`)
+Menus, settings, and file lists use a unified list widget. It supports scrolling, greyed-out divider rows, horizontal value-selection, and split-pane detail views:
 
-##### 1. `read <address> <size> [count]`
-Reads memory at the specified address.
-- `size`: Access width in bits (`8`, `16`, `32`) or raw `bytes`.
-- `count`: Number of elements to read (defaults to `1`).
-- **Examples**:
-  - Read a 32-bit CPU/MCU register (e.g., `RCC->RSR` reset status register at `0x580244D0`):
-    ```bash
-    python scripts/debug/memory.py read 0x580244D0 32
-    ```
-  - Read the SRAM magic boot intent cell at `0x2001FFF8`:
-    ```bash
-    python scripts/debug/memory.py read 0x2001FFF8 32
-    ```
-  - Read raw bytes (e.g., 16 bytes starting at `0x24000000`):
-    ```bash
-    python scripts/debug/memory.py read 0x24000000 bytes 16
-    ```
+```c
+typedef struct {
+    const char *title;
+    int num_items;
+    int selected;
+    int scroll_y;
+    int visible_lines;
+    uint32_t selected_tick;
+    uint32_t scroll_tick;
 
-##### 2. `write <address> <size> <value>`
-Writes a value or byte pattern to the target memory or register.
-- `size`: Access width in bits (`8`, `16`, `32`) or raw `bytes`.
-- `value`: Hex/decimal integer value, or space-separated hex bytes string (when size is `bytes`).
-- **Examples**:
-  - Write a 32-bit button mask to the remote-input shadow cell at `0x2001FFF4`:
-    ```bash
-    python scripts/debug/memory.py write 0x2001FFF4 32 0x10
-    ```
-  - Write raw bytes:
-    ```bash
-    python scripts/debug/memory.py write 0x24000000 bytes "AA BB CC DD"
-    ```
+    const char* (*get_label)(int index);
+    void (*on_action)(int index);
+    void (*on_back)(void);
+    void (*on_adjust)(int index, int dir); // LEFT/RIGHT value adjusting
+    void (*on_game)(int index);           // GAME button hook
+    bool (*is_enabled)(int index);        // Grey-out/skip divider predicate
 
-##### 3. `dump <address> <length> <file>`
-Dumps a contiguous memory region of `length` bytes to a local file. Reads are executed in 64 KiB chunks to avoid OpenOCD timeouts.
-- **Example**:
-  - Dump the 1 MiB Bank 1 internal flash to a local file:
-    ```bash
-    python scripts/debug/memory.py dump 0x08000000 0x100000 build/bank1_dump.bin
-    ```
-
-##### 4. `compare <address> <file> [--length <length>]`
-Compares the target's memory starting at `address` against the contents of a local file. Reports byte mismatches (up to the first 20 differences).
-- **Example**:
-  - Compare Bank 1 flash against a local compiled chainloader binary:
-    ```bash
-    python scripts/debug/memory.py compare 0x08000000 build/gnw_chainloader.bin
-    ```
-
-##### 5. `search <start> <end> [pattern] [--ospi]`
-Searches a memory range (aligned to 4-byte boundaries) for either a specific byte pattern or external flash (OSPI) pointers.
-- `pattern`: Hex value or bytes string to search for (e.g., `AABB` or `0x12345678`).
-- `--ospi`: Scans for any 32-bit words that fall within the external flash memory-mapped range (`[0x90000000, 0x94000000)`).
-- **Examples**:
-  - Search for references to the SRAM magic cell:
-    ```bash
-    python scripts/debug/memory.py search 0x24000000 0x24040000 0x2001FFF8
-    ```
-  - Scan memory for OSPI pointers:
-    ```bash
-    python scripts/debug/memory.py search 0x24000000 0x24040000 --ospi
-    ```
-
-### Live-state debugging playbook
-
-`memory.py` reads halt→read→**resume** (and `trace.py halt` halts without reset), so you can peek a *running or just-booted* device without disturbing its boot state. This is what makes boot-bug forensics possible: get the device into a scenario, leave it parked, and read.
-
-**Useful non-DTCM state registers (read with `memory.py read <addr> 32`):**
-
-| Address | Register | What it tells you |
-|---|---|---|
-| `0x2001FFF8` / `0x2001FFFC` | SRAM magic / target | pending boot intent (see §9); note this sits at the stack top, so it reflects stale stack at idle |
-| `0x2001FFF4` | remote-input shadow | injected button bitmask (`REMOTE_INPUT`, now default-on — see §10.1); `input_button_t` bit order |
-| `0x20000000` | RG magic (DTCM) | Retro-Go quit/reset trace |
-| `0x580244D0` | `RCC->RSR` | reset cause: PORRSTF (bit23), SFTRSTF (bit24), PINRSTF (bit22), BORRSTF (bit21) |
-| `0x58024810` | `PWR->CPUCR` | SBF standby flag (bit6), STOPF (bit5) — distinguishes warm reset vs. standby wake |
-| `0x58024824` | `PWR->WKUPFR` | wakeup-pin flag |
-| `0xE000ED04` | SCB ICSR | `VECTACTIVE & 0x1FF == 3` ⇒ HardFault active |
-
-**Recipe — compare boot scenarios (e.g. "works vs. fails"):** park the device at the same UI point in each scenario, read the magic cells + `RCC->RSR` + `PWR->CPUCR`, and diff. Reads are non-destructive, so the device stays in-state. (This session: a stranded `FRCE` at `0x2001FFF8` only appeared in the failing path — the magic word was identical at idle but differed at the moment the OFW read it.)
-
-**Recipe — locate a hang / black screen:** `trace.py halt` (no reset) to freeze it and read PC, then map PC to source with `arm-none-eabi-addr2line -f -e build/app/app.elf <PC>`. The app runs from AXI-SRAM, so its `.elf` is linked at `0x24000000` and PC maps directly. (This session: PC sat on the `__WFI` in `gui_refresh` → display used before `gui_init()`.) If a plain reset cleanly recovers to the chainloader, the banks were still unswapped, so the hang preceded any bank swap — narrowing it to pre-jump code.
-
-**Asset tooling:** the Mario/Zelda/NES graphics reverse-engineering scripts were consolidated onto the shared `scripts/common/` library as 7 parameterized tools:
-
-- `assets.py` — the asset pipeline: decrypt stock flash, decompress the clock-graphics blob, extract palettes, emit `mario_assets.h`, and render the Zelda menu assets from `zelda_tiles_v3.json`.
-- `extract.py` — extract visual PNGs from flash or a ROM: NES CHR pages, metasprites, and G&W menu tiles.
-- `render.py` — labeled tile-grid sheets, full NES CHR-page renders, and sprite-layout experiments.
-- `inspect_gfx.py` — dump tiles to the terminal as ASCII art or hex, and tally colour frequencies.
-- `romcheck.py` — validate a ROM/flash image (iNES header, boot magic, tile stats) and search for sprite colours or a palette in patched memory.
-- `findtiles.py` — locate tiles matching a feature (brick/mortar fill, letter shapes) within a tileset.
-- `capture.py` — pull the live device framebuffer over OpenOCD as a screenshot PNG or a recorded animation/video (hardware required).
-- `scripts/build/push_batched.py` — push files to the device LittleFS via gnwmanager's in-process bindings, **always draining openocd's stdout**: an undrained subprocess pipe-buffer deadlock (openocd blocks on `write()` once the ~64 KB buffer fills, on the slow first LittleFS-mount write) was the long-standing "multi-file push hangs" bug; setting `GNWMANAGER_OPENOCD_DEBUG=1` unconditionally keeps the pipe drained. Probe-driven tests bound every operation with `time_budget()` (SIGALRM, since the openocd TCL socket has no per-command timeout) and assert `chainloader_running()` (the chainloader's SysTick `uwTick` advancing) before trusting a read, because a flash or push leaves the gnwmanager RAM flasher resident, not the chainloader.
-
-**Binary inspection of the chainloader ELF:**
-```bash
-arm-none-eabi-nm -S build/gnw_chainloader.elf | grep "<symbol>"
-arm-none-eabi-addr2line -e build/gnw_chainloader.elf 0x0800XXXX
-arm-none-eabi-objdump -d build/gnw_chainloader.elf | sed -n '/<func>:/,/^$/p'
+    bool is_split;                        // Two-pane split mode
+    void (*draw_right_pane)(int selected_idx, uint32_t selected_tick);
+} ui_list_t;
 ```
 
-### 10.1 Remote input over the debug probe
+### The GUI API Seam (`gui_api_t`)
+To prevent code duplication, the core publishes its drawing primitives, layout helpers, theme colors, and translation interfaces to loadable modules via a vtable structure defined in `system/gui_api.h`:
 
-A test-only path that lets a workstation drive the on-device UI through the SWD/JTAG probe, with no keyboard emulator and no hardware modification. It exists to make a debug session able to *act* on the device (navigate menus, enter the file browser, trigger the launcher escape) instead of only observing it — the missing half of autonomous hardware testing alongside `capture.py` / `memory.py`.
-
-**Mechanism — a shadow cell.** The hardware GPIO input registers (`IDR`) are read-only, so physical presses can't be forged there. Instead a single 32-bit "shadow" word lives at `SRAM_REMOTE_INPUT_ADDR` = `0x2001FFF4` (defined in `src/common/memory_map.h`), one word below the boot-magic cells and inside the same top-of-DTCMRAM region the OFW stack reservation already protects. The app runs from AXI-SRAM (`0x24000000`+), so this DTCM address never collides with its code, stack, or module pool. A debug-probe write to the cell is the entire host→device channel.
-
-**Bit format — the "unified format."** Bit positions follow the chainloader's `input_button_t` enum (`src/chainloader/system/input.h`): UP=0, DOWN=1, LEFT=2, RIGHT=3, A=4, B=5, START=6, SELECT=7, PAUSE=8, GAME=9, TIME=10, PWR=11. The host always speaks this format; the OFW patch translates the bits it understands into the stock gamepad encoding.
-
-**Two device-side consumers, both gated behind `-DREMOTE_INPUT`:**
-- *Chainloader* (`system/input.c`): `input_update()` OR's the shadow word into each button's pressed state, so the existing just-pressed / auto-repeat logic treats a remote hold exactly like a finger hold. `input_init()` clears the cell so a cold boot with no host attached injects nothing.
-- *OFW patch* (`src/patch/main.c`): `read_buttons()` already hooks the stock firmware to honor the Left+Game launcher-escape macro; with the flag it also maps the shadow cell's LEFT/GAME bits into the stock `gamepad` word, so the escape works from inside a running Mario/Zelda game too (verified on hardware — see the tests below). A full in-game remote would require reverse-mapping the entire stock gamepad layout and is intentionally out of scope.
-
-**Build gating.** The hook is **on by default** — it ships as a feature (drive the UI over the probe), not just a debug aid — so the build adds `-DREMOTE_INPUT` to both `C_DEFS` (app) and `PATCH_CFLAGS` (patch) unless you opt out with `make REMOTE_INPUT=0`. The device-side cost is ~8 bytes (which golden now carries).
-
-**Host side — three layers, one backend.** The mechanism lives once in `scripts/common/remote_input.py` and is shared by a manual front-end and the automated tests (so a test never depends on `scripts/debug/`):
-
-- **`scripts/common/remote_input.py`** — the engine. Holds **one persistent OpenOCD connection** and exposes a `button_press()` API: `dev.button_press([BTN_DOWN])` is a clean tap, `repeat=N` taps N times, and `with dev.button_press([BTN_LEFT, BTN_GAME], hold=True): …` holds for the block. The persistent connection is the whole point — a tap is `set mask → ~80 ms → clear` over one open socket. (The original mistake was making a tap out of two separate `memory.py` invocations, each spinning up its own OpenOCD; press→release ended up *seconds* apart, so the firmware auto-repeat treated every "tap" as a long hold and scrolled the whole menu.) An `InputTransport` seam abstracts *how* a press is delivered — today `ShadowCellTransport` (SWD), tomorrow a Raspberry-Pi GPIO rig driving NRST / power / real button lines behind the same API. `reconnect()` re-opens the link after a device reset (a bank swap or the Left+Game escape resets the MCU and tears down the SWD session at the process level).
-- **`scripts/common/harness.py`** — test helpers: resolve a firmware symbol via `nm` (tolerating LTO's `.lto_priv` suffixes; addresses move every rebuild, so never hardcode), read the live menu selection (`g_list_main.selected`, offset 8), closed-loop `navigate_to()` (reads selection and steps toward the target — robust against idle-hide, which blanks the menu after ~30 s so the first input only un-hides it), capture a frame over the same connection, `wait_u32()` (poll-with-reconnect across a reset), and a tiny pass/fail `TestRun`.
-- **`scripts/debug/remote_control.py`** — manual control. Keyboard (raw-mode; terminals send key-down but not key-up, so a key holds for `--hold` ms refreshed by the terminal's own auto-repeat) or `--gamepad` (Linux evdev, which gives true press/release). Restores the terminal via try/finally + atexit + signal handlers and always clears the cell on exit.
-
-**Tests** (`scripts/tests/`, depend only on `common/`):
-- `test_remote_input.py` — asserts a single tap moves the selection by exactly one (the regression that proved the timing fix), and `repeat=3` by exactly three.
-- `boot_selector_test.py [--target all|retrogo|mario|zelda]` — drives the unified LAUNCH selector over the probe and verifies it boots each target this unit offers. Selection is closed-loop on the firmware's own `g_boot_target` (read over SWD), never an OCR guess. An earlier OCR-driven version mis-read the selection and reported a Zelda boot bug that did not exist (MARIO was selected and Mario correctly booted). **RETRO-GO**: A resets via `board_request_jump` and the stub re-launches Retro-Go from Bank 1 (PC lands in the Retro-Go flash region, chainloader header gone). **MARIO/ZELDA**: A flashes the patched OFW backup into Bank 2 if it isn't already active, bank-swaps, and boots it with no manual power-on (the warm-switch fix), confirmed by the reset vector at `0x08000004` (Mario `0x08018101`, Zelda `0x0801B3E1`); then **Left+Game** FRCE-resets and unswaps back to the chainloader. The escape runs even if the wrong OFW boots, so a mis-boot never strands the banks swapped. Verified end-to-end on hardware for all three targets (6/6), re-flashing in both directions (Mario over a Zelda Bank 2 and vice-versa).
-
----
-
-## 11. Filesystem Integration & Dynamic Theming
-
-### Overview
-
-The chainloader needs to read and write three classes of external-flash data:
-
-1. **User configuration and themes** — small, writable files owned entirely by the chainloader. Stored on the Retro-Go LittleFS partition (already present on the flash).
-2. **ROM archives** — the large read-only Retro-Go FrogFS image. The chainloader only needs to list files here, never write to it.
-3. **SD card files** — FAT/exFAT volumes on an optional SD card expansion. Retro-Go SD already mounts these; the chainloader needs read-only directory listing for its file browser.
-
-All three are accessed through a common file-browser UI page, driven by a filesystem-type tag obtained from the partition scanner.
-
-### Filesystem Roles
-
-| Filesystem | Access | Use in chainloader                                  |
-| :--------- | :----- | :-------------------------------------------------- |
-| LittleFS   | R/W    | Themes (`/themes/*.bin`), user config, future saves |
-| FrogFS     | —      | recognized + sized in the partition viewer; not browsable |
-| FAT/exFAT  | R/O    | SD card directory listing for file browser          |
-
-### Implementation
-
-#### LittleFS (Read-Write)
-
-The LittleFS core (the `deps/littlefs/` submodule, wrapped by `src/chainloader/storage/lfs_wrapper.c`) is built read-write; the `LFS_READONLY` flag that once kept it read-only is no longer set. The block device callbacks `lfs_flash_prog` and `lfs_flash_erase` in `lfs_wrapper.c` implement write and erase by temporarily exiting OSPI memory-mapped mode (`OSPI_DisableMemoryMappedMode()`), calling the OSPI program/erase APIs from `flash.c`, and immediately re-entering memory-mapped mode (`OSPI_EnableMemoryMappedMode()`). Cache and page sizes are set to 256 bytes to match the OSPI page-program granularity and avoid alignment faults.
-
-The mount address is not hardcoded. Instead, `lfs_wrapper.c` exposes `lfs_test_mount_at(uint32_t addr, uint32_t block_count)` so the application can pass the address and size discovered by the partition scanner at runtime.
-
-#### FrogFS (Recognition Only)
-
-FrogFS is **recognized and sized but not browsable.** The partition scanner
-(`storage/partition.c`, `check_address`) reads the `FROG` magic + `bin_sz` + entry
-count straight from the memory-mapped `frogfs_head_t` header, so a FrogFS partition
-shows up in the **partition viewer** with its address/size/entry count. The content
-reader/driver (the former `src/chainloader/storage/frogfs_reader.c` + its
-`frogfs_vfs_*` driver) was **removed** to reclaim flash — there is no `FROGFS`
-filesystem driver, so the file browser cannot enter a FrogFS partition (it degrades
-gracefully: `mount_tab_partition` null-checks the driver and shows an empty list).
-The VFS read path (`read_from_partition`, `vfs_module_available`) no longer has a
-FrogFS branch. (If full FrogFS *listing* is ever wanted again, restore the reader as
-a PIE module rather than in-core.)
-
-#### FatFS with exFAT
-
-The chainloader builds the FatFs source in two flavors from a staged `ffconf.h`: a tiny **in-core read-only bootstrap** (long filenames off, CP437) that is always present, and a **loadable `fatfs.bin` PIE module** that enables full read-write exFAT with 255-character long filenames. A minimal block-device driver (`src/chainloader/storage/fatfs_diskio.c`) routes FatFs `disk_read` to either the memory-mapped flash or the SD card block device (`src/chainloader/storage/sdcard.c`), selected by the volume base address; in-core write stubs return `RES_WRPRT` (the RW module performs the writes).
-
-#### Theme System (slot model + PIE theme module)
-
-The theme system is a **slot model**. The 40 KiB core ships only **color-only Default / Fallback themes**: a `theme_driver_t` (`ui/theme.h`) is a name plus five RGB565 colors (background, foreground, accent, and border/footer shades) with optional `draw_selector` / `draw_footer` / `draw_background` callbacks. The **sprite themes** (Zelda `FAIRY` animated cursor; Mario `COIN` and the original `YOSHI` brick-floor look) live in a loadable **PIE theme module** (`src/modules/theme/module_entry.c`, built to `theme.bin`), so their blitter and tile recipes cost the 40 KiB core no flash.
-
-The PIE loader brings the module in (`mod_load_theme`); its `init_module()` registers the OFW-appropriate `theme_driver_t`(s) through the host vtable `theme_host_api_t`. The module carries its own sprite blitter (the core's `gui_draw_asset` was stripped) and reads the live framebuffer plus the OFW tileset/palette through that vtable, so sprites that reference stock Nintendo graphics are read at runtime from the OFW external asset blocks (Zelda block at `0x90000000`, Mario block at `0x90400000`) and never embedded in the repository.
-
-The active per-OFW theme slot is persisted in `TAMP->BKP3R` nibbles; a `< THEME >` value-selector in Settings cycles the registered themes live, and switching the OFW re-registers the module for the new console. If the module is absent, the launcher falls back to the in-core color-only theme: a plain background with hard-coded colors and the built-in Fusion Pixel 12px monospaced font. All functional systems (navigation, file browser, diagnostics, boot targets) remain fully operational in that fallback.
-
-#### File Browser Integration
-
-The partition viewer (`ui/partition_viewer.c`) presents an action menu when the user presses `A` on a detected filesystem partition. The `PAGE_BROWSER` page (`ui/ui_file_browser.c`) is invoked with the partition's filesystem type tag, base address, and size. The browser dispatches directory listing to the appropriate backend (LittleFS or FatFS; FrogFS partitions have no driver, so entering one yields an empty list) and renders the results with the standard `ui_list` widget, supporting scroll, back navigation, and eventual file-action hooks.
-
-#### SD Installer (transient module) and the shared streaming copy
-
-Installing artifacts from an SD card is done by a **transient PIE module**,
-`/modules/installer.bin` (`MOD_FLAG_TRANSIENT`): the core loads it on demand, runs
-it, then reclaims its pool slot (`mod_pool_mark` / `mod_pool_reset`). One generic
-descriptor-driven path installs **two artifact classes**: language packs
-(`/i18n/<code>.lang` plus their `/i18n/fonts/<script>.fnt`) and PIE modules (the fixed
-`/modules/*.bin` list); header-only reads peek each artifact's version. The install
-gate mirrors the loader's LOAD gate (magic plus the running core's ABI for that class,
-using the core's own ABI values; see §5 ABI Gating), so nothing the firmware could not
-load is ever committed.
-
-At boot the core shows a **per-class confirm pop-up** ("Install N language(s) from
-SD?" or "Install N module(s) from SD?", or both combined). On accept it commits:
-**languages apply live** (the core re-runs i18n re-discovery via the language module's
-`rediscover()` and re-applies), while **installed modules apply on the next boot**.
-
-The actual copy **streams** through one shared in-core function `vfs_copy_open_file`
-(4 KiB buffer), the same copy loop the file browser uses; modules reach it via
-`vfs_copy_sd_to_lfs`. There is no whole-file buffer.
+```c
+typedef struct gui_api {
+    /* direction + measurement */
+    bool (*is_rtl)(void);
+    int  (*mirror_x)(int x, int elem_w, int box_x, int box_w);
+    int  (*text_width)(const char *str);
+    /* text */
+    void (*draw_text)(int x, int y, const char *str, uint16_t color);
+    void (*draw_text_aligned)(int x, int y, int w, const char *str, uint16_t color, bool is_active, uint32_t tick);
+    void (*draw_text_marquee)(int x, int y, int max_w, const char *str, uint16_t color, bool is_active, uint32_t tick);
+    void (*draw_char)(int x, int y, uint32_t cp, uint16_t color);
+    void (*draw_selector)(int x, int y, uint16_t color);
+    /* primitives */
+    void (*draw_rect)(int x, int y, int w, int h, uint16_t color);
+    void (*fill_rect)(int x, int y, int w, int h, uint16_t color);
+    void (*blend_rect)(int x, int y, int w, int h);
+    void (*draw_progress_bar)(int x, int y, int w, int h, int percent, uint16_t border, uint16_t fill);
+    void (*draw_sprite)(int x, int y, int w, int h, const uint8_t *data, bool transparent, bool flip, int pitch);
+    /* theme colors */
+    uint16_t (*color_bg)(void);
+    uint16_t (*color_fg)(void);
+    uint16_t (*color_accent)(void);
+    uint16_t (*color_border)(void);
+    uint16_t (*color_footer)(void);
+    /* frame */
+    uint16_t *(*framebuffer)(void);
+    void (*refresh)(void);
+    /* modals */
+    void (*confirm)(const char *message, void (*on_yes)(void));
+    void (*error)(const char *message);
+    void (*notice)(const char *message);
+    void (*context_menu)(const char *title, const char **options, int count, void (*on_select)(int index));
+    /* i18n */
+    const char *(*tr)(int id);
+    const char *(*lang_code)(void);
+} gui_api_t;
+```
 
 ---
 
-## 12. Internationalized UI
+## 7. Internationalization (i18n) & UTF-8 Font Streaming
 
-### Overview
+The i18n system is designed to load resources dynamically, protecting the core from memory exhaustion.
 
-The menu UI is translatable into any language, including non-Latin scripts. The
-guiding constraint is the project's stability invariant: a missing or corrupt
-translation/font asset can never block the boot path, so the design layers three
-independent fallbacks — in-core English text, English per-string, and in-core
-ASCII glyphs — each degrading to the one below. Only ~1.5 KB of the 40 KB binary
-is spent on the feature; the translations and the fonts they need live on the
-device filesystem, fetched at runtime. Right-to-left languages (Arabic, Farsi)
-**mirror the layout** rather than reorder glyphs, their text reshaped and bidi-ordered
-**offline at cook time** (no runtime shaper); and a non-Latin font beyond the active
-language **loads on demand** by Unicode range, so e.g. a CJK filename renders under an
-English UI. See [docs/i18n.md](docs/i18n.md) for the layer detail, formats, the RTL
-mirror, the `gui_api` module surface, and the on-demand font slots.
+### Language Discovery & Fallbacks
+* **Baked Core English:** The core contains only the English string table and a basic 12px ASCII monospaced font.
+* **Dynamic `.lang` Packs:** Other languages reside in self-describing `.lang` packs (`/i18n/<code>.lang`) on LittleFS, loaded on demand. If a pack or character is missing, the UI falls back gracefully to the baked English representation.
+* **Strings ABI Protection:** Language packs are gated by `STRINGS_ABI_VERSION` to ensure they match the structural string ID mapping in the running firmware.
 
-### Implementation
+### CJK Font Paging (Glyph-on-Demand)
+Chinese, Japanese, and Korean (CJK) fonts are too large to fit in RAM. 
+* **Streaming Handle:** The CJK `.fnt` files are kept open on LittleFS. The font renderer binary-searches the codepoints index by seeking directly on flash, retrieving only the required 1bpp glyph bitmaps on demand.
+* **Paging LRU:** Glyphs are cached in a small Least-Recently-Used (LRU) buffer in AXI-SRAM. 
+* **Fallback Search:** The renderer scans three font slots in order: active script font → BASE `latin.fnt` (which also contains controller glyphs) → AUX script font by Unicode range, ensuring CJK filenames render under an English UI.
 
-Three layers, each overriding the one beneath it (the same "active overrides
-core, else fall back" pattern as the theme system):
+### Right-to-Left (RTL) Layout Mirroring
+Arabic and Farsi mirror the entire UI layout logical coordinates.
+* **Offline Shaping:** Text shaping (joining characters) and bidirectional ordering (logical-to-visual conversion) are computed **offline at cook time** (using `arabic_reshaper` and `python-bidi`). The device draws the pre-shaped visual bytes left-to-right.
+* **RTL Primitives:** The layout coordinates are reflected dynamically at draw time using the `gui_mirror_x` and `gui_draw_text_aligned` (right-anchored) seams in the vtable.
 
-- **In-core (always present):** a baked Fusion Pixel **12px monospaced** ASCII
-  font (`ui/gui_font.c`, mixed-case, generated from the OTF by
-  `scripts/build/cook_font.py`) and the English string table (`ui/strings.c`,
-  every label behind a `string_id_t` + `tr()`). The renderer was rewritten for
-  UTF-8 decoding and proportional widths; the HAL-free core of it (`gui_text.c`:
-  `gui_utf8_next` / `gui_glyph` / `gui_text_width`) is host-unit-tested.
-> **Lean-core note:** everything below — `font_ext`, discovery, pack +
-> script-font loading, and switching — now lives in the **PIE language module**
-> (`src/modules/language/` → `/modules/language.bin`, the former `ui/i18n.c` +
-> `ui/font_ext.c`), NOT the firmware. SD install is no longer one of its jobs (it
-> was de-installed); the module now exposes a `rediscover()` the core calls after an
-> install. The core keeps only the baked ASCII font +
-> English `strings.c` + a thin `ui/i18n.c` shim that loads the module when present
-> and delegates (English-only defaults when absent). `gui_glyph` resolves non-ASCII
-> through a registerable hook (`gui_set_ext_glyph`) the module fills, so the module
-> owns rendering too. The module loads at boot whenever present (so UTF-8 works even
-> with English active) and stays resident. Contract: `src/chainloader/system/language.h`.
+---
 
-- **Shared script fonts:** per-script `.fnt` blobs on the filesystem
-  (`/i18n/fonts/<script>.fnt`) supply non-ASCII glyphs (accented Latin, CJK). The
-  module's `font_ext.c` reads them **LFS-only** (fonts are installed to LittleFS; the
-  SD is delivery-only, so a stale SD copy can't shadow them); each blob carries a
-  `ref_top` so its glyphs share the in-core ASCII baseline exactly. A small font is read
-  whole into RAM and binary-searched; a **complete CJK** font is too big, so it is held
-  open on LittleFS and **paged glyph-by-glyph** (binary-search `codepoints[]` by seek,
-  bitmap on demand, small LRU) through the handle-based `vfs_stream_t` primitive the
-  feature/MP3 file path also uses. Three slots are tried in order — the active language's
-  **script** font, an always-on **Latin base** (`latin.fnt`), then an on-demand **AUX**
-  font by Unicode range — so accented Latin renders in any language (e.g. `Scheiße.txt`)
-  and an arbitrary CJK filename renders under any UI. `latin.fnt` also carries
-  controller/logo icon glyphs the `{TOKEN}` text replacer (`gui_text.c` `gui_text_next`)
-  draws from a `{NAME}` shortcode. Detail: [docs/i18n.md](docs/i18n.md).
-- **Language packs (discovered, not registered):** per-language `.lang` files
-  (`/i18n/<code>.lang`, magic `'LNG2'`) hold the translated strings and
-  **self-describe** — each 76-byte header carries its own locale code + endonym +
-  script. **Only English is baked into the firmware;** at boot the language module
-  builds the list by *scanning* `/i18n/<code>.lang` on LittleFS (reading each
-  header), so a language never compiled in appears once its pack is present. Packs
-  are ABI-checked against `STRINGS_ABI_VERSION`; the core's `tr()` points at the
-  active table the module installs (English fallback per id). Sorted by code, English first.
+## 8. Diagnostics, Power, & SWD-Debugging Infrastructure
 
-Runtime reads are **LittleFS-only** (no per-switch SD scan). The active language
-is persisted **by code** in `/i18n/.active` (written on Settings exit, read at
-boot); until the filesystems are scanned (and whenever an asset is absent) the UI
-is in-core English. SD distribution runs through the **transient installer module**
-(`/modules/installer.bin`, `MOD_FLAG_TRANSIENT`): if the SD has new/newer
-`<code>.lang` packs (plus the fonts they declare), the core shows a per-class
-confirm pop-up at boot ("Install N language(s) from SD?") and on accept commits them
-into LittleFS's `/i18n` data folder (deleting each SD source after a successful install,
-since the SD is delivery-only), never a bank. Installed languages apply live
-(the core calls the language module's `rediscover()`, then re-applies). So a user
-drops `build/i18n/` onto the SD's `/i18n/` (a 1:1 mirror, no renaming). Assets are
-cooked by `make i18n` (`make push_i18n` is the dev shortcut). Full reference, file
-formats, and "adding a language" steps: [docs/i18n.md](docs/i18n.md).
+The chainloader embeds instrumentation to support diagnostics and automated host-side testing.
 
-**Module translations** are self-contained in each module binary (no device-side
-files): a module's per-language strings live in `i18n/modules/<module>/<lang>.json`,
-cooked by `scripts/build/cook_modstrings.py` (also run by `make i18n`) into an
-`[id][lang]` matrix compiled into the module; the module resolves them via `ms(MS_*)`
-after picking its column from `gui->lang_code()` (the `gui_api_t` seam exposes `tr()` +
-`lang_code()`), English fallback. RTL module text is pre-shaped at cook time
-(token-safe footers, no mirror); a feature module's **menu entry** is localized by
-packing its title per language into the module header (`menu_label_xlat`), which the
-core resolves live at discovery without loading the module. The MP3 player is the first
-consumer. Detail: [docs/i18n.md](docs/i18n.md).
+### On-Screen Diagnostics
+* **ADC1 Short Sampling:** The battery sense voltage is read using a short 1.5-cycle sampling time. This avoids integration of display ripple and provides stable, noiseless readings.
+* **Diagnostics Screen:** Displays active frame rates, Bank 2 flash status, active language code, and raw boot magic cells.
+
+### Crash Logging (D3 SRD-SRAM)
+If a hardware exception occurs, the `HardFault_Handler` captures execution states (PC, SP, LR, HFSR, CFSR, MMFAR, BFAR) and writes them to the battery-backed D3 SRAM (`0x38000000`). This memory survives system resets and power-offs, allowing host-side analysis via `scripts/debug/crash_log.py`.
+
+### SWD Remote Input Shadow Cell
+To enable autonomous hardware testing, the input subsystem (`system/input.c`) exposes a 32-bit remote-input shadow cell at `0x2001FFF4` (top of DTCM):
+* A workstation script (`scripts/common/remote_input.py`) writes button bitmasks directly to this address over SWD.
+* The firmware ORs the shadow mask with physical button states, allowing script-driven navigation with zero hardware modifications.
+
+### High-Speed Framebuffer Capture (Fastcap)
+To capture screenshots over SWD without impacting the CPU:
+* A position-independent capture codec (`src/fastcap/`) is loaded into `D2 AHB-SRAM1` (`0x3000E000` to `0x30010000`), isolating it from AXI-SRAM.
+* The screen is divided into a 32×16 grid. FNV-1a hashes are computed per tile.
+* Only changed tiles are hardware-JPEG compressed and transmitted, reducing SWD bandwidth.
+
+---
+
+## 9. Test Automation & Quality Assurance Suite
+
+The project features a structured, multi-tier test automation suite divided between host-side simulations and on-device hardware-in-the-loop (HIL) tests. The runner, discovery mechanisms, and environmental isolation strategies are orchestrated to validate both core stability invariants and modular filesystem extensions.
+
+### 9.1 Test Suite Orchestration & Tiers
+
+The test suite is driven by the centralized Python orchestrator [run_suite.py](scripts/tests/run_suite.py). 
+
+#### Discovery & Metadata
+Tests are discovered dynamically. Each python test file contains a `TEST_META` dictionary (or is mapped via `LEGACY_META` in the runner for backwards compatibility) specifying:
+* **Tier:** The classification layer (L0 to L4, tour, or manual).
+* **Subsystem:** The target area (e.g., `boot`, `fs`, `i18n`, `modules`, `sd`, `theme`).
+* **Envs:** The hardware environment requirements (e.g., `ENV-RG` for Retro-Go, `ENV-DOCS` for stock games/configs).
+* **Build:** The compilation flags required on-device (e.g., `REMOTE_INPUT=1`, `ABI_SELFTEST=1`).
+* **Observable:** The verification method used to assert correctness (`host`, `swd`, `fs`, `ocr`, `manual`).
+
+#### Environmental Provisioning
+Rather than running tests on static hardware, the suite leverages provision profiles under [scripts/tests/env/](scripts/tests/env/). Before running a set of tests, [run_suite.py](scripts/tests/run_suite.py) executes environment setup scripts (e.g., `env_bare.py`, `env_corrupt.py`, `env_no_extflash.py`, `env_stale_abi.py`). These scripts prepare the physical device state (erasing specific SPI partitions, writing corrupt filesystems, or flashing older ABI modules) to ensure each test runs from a pristine, well-defined hardware state, preventing side effects from leaking across tests.
+
+---
+
+### 9.2 Host-Side Tests (Tier L0 / L1)
+
+Host tests run natively on the development workstation, validating layouts, parsers, and binary structures without requiring a connected physical device:
+
+* **UTF-8 Layout Validation ([test_gui_text.c](scripts/build/test_gui_text.c)):** Exercises the core's proportional text layout, marquee calculation, RTL mirroring, and UTF-8 decoder. To run this 32-bit firmware code on 64-bit hosts, it implements a mock seam for `vfs_map_file` using the glibc `MAP_32BIT` flag under `mmap()`, ensuring returned file pointers fit within 32-bit addresses without truncation.
+* **ABI Gate Verification ([test_abi_gate.c](scripts/build/test_abi_gate.c)):** Validates the dynamic linker's version verification, ensuring that the firmware core rejects modules compiled with incompatible or stale ABI definitions.
+* **Settings Encoding ([test_settings_word.py](scripts/tests/host/test_settings_word.py)):** Asserts the correctness of settings serialization. It verifies that active languages, themes, and fast-boot options map precisely into the bitfields of the battery-backed backup register `TAMP->BKP3R`.
+* **Font Structure Check ([test_lang_fnt_parse.py](scripts/tests/host/test_lang_fnt_parse.py)):** Parses compiled binary `.fnt` files offline to verify internal index tables, width maps, and character ranges, protecting the device's streaming font engine from out-of-bounds reads or invalid pointer dereferences.
+* **Boot Table Alignment ([test_boot_magic_table.py](scripts/tests/host/test_boot_magic_table.py)):** Checks that register offsets, magic boot codes, and memory address constants are perfectly aligned between C headers and Python automation scripts.
+* **Build Gates ([determinism_test.py](scripts/tests/build/determinism_test.py) & [size_ceiling_test.py](scripts/tests/build/size_ceiling_test.py)):** Verifies that the compiler output is 100% byte-reproducible and asserts that binary sizes do not exceed strict partition boundaries (e.g., the 40 KiB flash ceiling for the stub).
+
+---
+
+### 9.3 On-Device SWD-Driven Tests (Tier L2 / L3 / L4)
+
+On-device tests are executed on physical hardware connected via JTAG/SWD, using closed-loop automation to drive the UI, capture states, and assert register behaviors. They integrate three main methodologies:
+
+#### 1. SWD Remote Input Injection
+Automated menu navigation is achieved through the remote input subsystem without mechanical or hardware modifications:
+* **Firmware Hook:** When compiled with `REMOTE_INPUT=1` (enabled by default), the input subsystem ([system/input.c](src/chainloader/system/input.c)) and patched OFW code read a 32-bit shadow memory cell at `0x2001FFF4` (`SRAM_REMOTE_INPUT_ADDR`) at the top of DTCMRAM. This shadow cell is OR'd directly with the physical button status.
+* **Low Latency & Timing:** The host-side driver [remote_input.py](scripts/common/remote_input.py) communicates with the debug probe using a single, persistent OpenOCD socket connection. This preserves button-press timing (typically ~80 ms hold, ~120 ms release) so that simulated presses behave exactly like a real tactile controller, avoiding the multi-second latencies of spawning new debug connections (which previously triggered auto-repeat and skipped rows).
+* **Test Verification:** [test_remote_input.py](scripts/tests/test_remote_input.py) asserts that injecting single and repeated button inputs moves the main menu selection by exactly the expected index count, confirming that the button-poll timing matches physical user expectations.
+
+#### 2. OCR-Based Visual Verification
+Rather than reading raw RAM coordinates to infer UI state, tests verify the actual rendered pixels on the screen:
+* **High-Speed Capture:** Screen frames are grabbed over SWD using [fastcap.py](scripts/debug/fastcap.py). The capture codec runs isolated in `D2 AHB-SRAM1` to avoid CPU interference, reading changed tiles and sending them over SWD.
+* **Font-Aware Recognition:** The recognizer [ocr.py](scripts/common/ocr.py) parses the frame using Tesseract OCR. It restricts character sets dynamically to match the active font range to optimize speed.
+* **Navigation Helpers:** [ocrnav.py](scripts/common/ocrnav.py) provides a closed-loop API: `navigate(dev, target_text)` scrolls and moves the cursor until it locates the target string visually, and `enter(dev, target_text)` navigates and presses the `A` button.
+* **Validation Tests:** [ocr_nav_test.py](scripts/tests/ocr_nav_test.py) and [verify_entry_translated_in_all_languages.py](scripts/tests/verify_entry_translated_in_all_languages.py) navigate the settings pages, change languages, and verify that translations render correctly on the display without any "?" fallback glyphs.
+
+#### 3. Memory & Register State Debugging
+To verify boot sequences and hardware bank transitions, tests inspect register states directly:
+* **Boot Target Inspection:** [boot_selector_test.py](scripts/tests/boot_selector_test.py) reads the file-static symbol `g_boot_target` over SWD to verify that cycling the boot selector modifies the correct internal target pointer. It then boots each target (Retro-Go, Mario, Zelda) and asserts that the program counter (`pc`) and stack pointer (`sp`) jump to the expected address ranges.
+* **Warm-Reset Verification:** [retrogo_return_test.py](scripts/tests/retrogo_return_test.py) tests the critical "Return to Main Menu" path (which warm-resets from Retro-Go back to the launcher). It halts the CPU, writes `BOOT_MAGIC_RESET` or `BOOT_MAGIC_RETROGO` directly to `RG_MAGIC_ADDR` (`0x20000000`), issues a reset, and verifies that the stub intercepts the magic code and boots back into Retro-Go rather than falling through to the menu.
+* **Option Byte & Bank Swapping:** Tests verify that option registers are properly unlocked and that bank swap options match the targeted boot state, preventing accidental bricking.
+
+---
+
+### 9.4 Test Suite Expansion Guidelines
+
+To add new tests or expand the QA capabilities of the project, use the following patterns:
+
+#### Adding a Host-Side Test (L0 / L1)
+1. Write a standalone C test file under `scripts/build/` or a Python test script under [scripts/tests/host/](scripts/tests/host/).
+2. Define a `TEST_META` dictionary with `tier="L0"` or `tier="L1"` and `observable="host"`.
+3. Integrate the test into the root `Makefile` host test target (`make test-host`) and list the executable in `run_suite.py` discovery rules.
+
+#### Adding an On-Device Test (L2 / L3)
+1. Create a Python test file under the appropriate subsystem subdirectory in [scripts/tests/](scripts/tests/).
+2. Define `TEST_META` specifying the required `envs` (e.g., `["ENV-DOCS"]` or `["ANY"]`), required `build` configurations, and `tier` (typically `L2` for non-destructive menu checks, or `L3` for destructive flash/reset sequences).
+3. Import [ocrnav.py](scripts/common/ocrnav.py) for screen-based navigation and `common.harness` for memory assertions.
+4. Execute via the suite runner: `python3 scripts/tests/run_suite.py --adaptive` (runs all tests matching the currently flashed firmware) or specify the tier.
+
+#### Avenues for Test Suite Expansion
+* **Module Loader & Relocation Testing:** Add tests to inject intentionally malformed or corrupted PIE binaries (e.g., modules missing relocations or with mismatched relocation table headers) to verify the loader handles them gracefully.
+* **High-Coverage Peripheral Mocking:** Expand host-side test coverage by mocking STM32 peripherals (such as SAI audio, LTDC display clocks, and OSPI flash memory controllers) to validate rendering and sound drivers in L0/L1 environments.
+* **OCR Quality Tuning:** Improve character recognition for non-Latin scripts (Cyrillic, Greek, CJK). Although the fonts contain these glyphs, the template matching currently experiences recognition errors under non-Latin scripts. Training the OCR character library on exact rendered font grids will enable full closed-loop translation validation for all supported languages.
+* **Power-Down & Fault Resilience:** Expand the tests to verify state persistence across sudden power outages. This includes simulating power failures (using JTAG reset) during LittleFS file commits or flash bank swaps to guarantee the backup recovery mechanisms restore a working bootloader menu.
+
+---
+
+## 10. Asset Extraction & OFW Data Rebasing
+
+The themed launcher graphics (Mario/Zelda) are extracted from stock Nintendo firmware binaries to respect copyrights and conserve storage.
+
+### The Asset Cooking Pipeline
+At build time, `scripts/build/cook_assets.py` performs **usage-based dynamic cooking**:
+1. **Discovers Symbols:** It scans the entire `src/` directory (including loadable modules like the theme driver) for `ASSET_` string literals.
+2. **Filters & Packs:** Only referenced assets are extracted from the theme JSON configurations and compiled into `assets_gen.c`, keeping the physical footprint minimal.
+
+### OFW Data Rebasing
+Patched OFWs store asset offsets as absolute pointer addresses linked for `0x08000000`. When reading from unswapped Bank 2 (`0x08100000`) or an SPI backup (`0x90xxxxxx`), the chainloader rebase-offsets these pointers:
+* **Mario Palette Lookup:** Table resides at OFW offset `0x180A4`. The target palette is retrieved from the compressed memory blob at offset `0xCD54`.
+* **Mario Tileset Pointer:** Located at OFW offset `0x7350`. The absolute pointer is remapped dynamically:
+  - Active OFW: `source_fw + 0x100000`
+  - SPI Backup: `source_fw + (ptr - 0x08000000)`

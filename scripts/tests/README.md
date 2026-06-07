@@ -1,7 +1,7 @@
 # Device tests (`scripts/tests/`)
 
 On-hardware tests that drive the Game & Watch over the debug probe and assert on
-device state. They depend **only** on `scripts/common/` — never on
+device state. They depend **only** on `scripts/common/` - never on
 `scripts/debug/`. Anything a test needs lives in `common/` (input backend in
 `common/remote_input.py`, harness helpers in `common/harness.py`).
 

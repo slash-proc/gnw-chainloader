@@ -26,7 +26,7 @@ C_INCLUDES = \
 CFLAGS = $(MCU) $(C_INCLUDES) -O2 -Wall -fdata-sections -ffunction-sections
 
 # Linker flags
-LDFLAGS = $(MCU) -T STM32H7B0_FASTCAP.ld -Wl,--gc-sections -nostdlib
+LDFLAGS = $(MCU) -T linker/STM32H7B0_FASTCAP.ld -Wl,--gc-sections -nostdlib
 
 # Default action: build all
 all: $(TARGET).bin

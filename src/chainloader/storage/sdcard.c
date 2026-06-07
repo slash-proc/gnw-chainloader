@@ -1,6 +1,6 @@
 /*
  * In-core SD-card block device — faithful port of the proven implementation in
- * `example projects/game-and-watch-bootloader/`:
+ * `https://github.com/sylverb/game-and-watch-bootloader`:
  *   - softspi.c                       -> the bit-bang SPI engine
  *   - porting/lib/FatFs/user_diskio_softspi.c -> the SD protocol over SoftSPI
  *   - gw_sdcard.c switch_ospi_gpio()  -> the OSPI<->GPIO pin handoff

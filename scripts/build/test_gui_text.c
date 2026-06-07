@@ -30,6 +30,30 @@ int vfs_read_file(const char *path, void *dst, uint32_t max, uint32_t *out_size)
 int vfs_lfs_read(const char *path, void *dst, uint32_t max, uint32_t *out_size) {
     return vfs_read_file(path, dst, max, out_size);
 }
+#include <sys/mman.h>
+#ifndef MAP_32BIT
+#define MAP_32BIT 0x40
+#endif
+
+int vfs_map_file(const char *path, uint32_t *out_addr, uint32_t *out_size) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size <= 0) { fclose(f); return -1; }
+
+    void *ptr = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_32BIT, -1, 0);
+    if (ptr == MAP_FAILED) {
+        fclose(f);
+        return -1;
+    }
+    size_t n = fread(ptr, 1, size, f);
+    fclose(f);
+    *out_addr = (uint32_t)(uintptr_t)ptr;
+    *out_size = (uint32_t)n;
+    return 0;
+}
 /* Streaming stubs for the PAGED font path: back a vfs_stream_t by a host FILE* (in ctx). */
 int vfs_open_stream(vfs_stream_t *s, const char *path) {
     FILE *f = fopen(path, "rb");

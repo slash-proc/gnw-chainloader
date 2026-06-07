@@ -5,7 +5,7 @@
  * In-core SD-card block device.
  *
  * Faithful port of the proven, tested-on-this-device SD support in
- * `example projects/game-and-watch-bootloader/` (Core/Src/gw_sdcard.c +
+ * `https://github.com/sylverb/game-and-watch-bootloader` (Core/Src/gw_sdcard.c +
  * porting/lib/FatFs/user_diskio_{spi,softspi}.c + softspi.c). That reference
  * supports two physical SD mods and auto-detects between them; we replicate
  * both:

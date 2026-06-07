@@ -132,8 +132,8 @@ ASFLAGS = $(MCU) $(OPT) -Wall -fdata-sections -ffunction-sections -g
 LIBS = -lc -lm -lnosys
 LDFLAGS = $(MCU) -specs=nano.specs $(LIBS) -Wl,--gc-sections -flto
 
-STUB_LDFLAGS = $(LDFLAGS) -TSTM32H7B0_FLASH_STUB.ld -Wl,-Map=$(STUB_BUILD_DIR)/stub.map
-APP_LDFLAGS  = $(LDFLAGS) -ffixed-r9 -TSTM32H7B0_RAM_APP.ld -Wl,-Map=$(APP_BUILD_DIR)/app.map
+STUB_LDFLAGS = $(LDFLAGS) -Tlinker/STM32H7B0_FLASH_STUB.ld -Wl,-Map=$(STUB_BUILD_DIR)/stub.map
+APP_LDFLAGS  = $(LDFLAGS) -ffixed-r9 -Tlinker/STM32H7B0_RAM_APP.ld -Wl,-Map=$(APP_BUILD_DIR)/app.map
 
 STUB_OBJECTS = $(addprefix $(STUB_BUILD_DIR)/,$(STUB_C_SOURCES:.c=.o))
 STUB_OBJECTS += $(addprefix $(STUB_BUILD_DIR)/,$(COMMON_ASM_SOURCES:.s=.o))
@@ -415,7 +415,7 @@ $(BUILD_DIR)/fileops.bin: $(MODULE_BUILD_DIR)/fileops/fileops.elf
 	@$(BIN) $< $@
 
 # Example feature module (PIE, transient) -- proves the feature-module framework
-# (docs/module-menu-registration.md). Its header manifest (-DMODULE_MENU_*) declares a
+# (see DESIGN.md §5). Its header manifest (-DMODULE_MENU_*) declares a
 # Tools entry the core discovers + lists with NO module-specific core code. Template
 # for real feature modules (e.g. the MP3 player). Reuses the theme module's flags.
 MODULE_EXAMPLE_CFLAGS = $(MODULE_THEME_CFLAGS) -DMODULE_FLAGS=MOD_FLAG_TRANSIENT \
@@ -731,7 +731,7 @@ endif
 
 # Boot-timing instrumentation (scripts read g_boot_bench over SWD). Opt-in only:
 # `make BOOT_BENCH=1 ...`. Off by default so the golden build carries zero bytes.
-# See docs/startup-module-probe.md.
+# See DESIGN.md §5.
 ifdef BOOT_BENCH
 C_DEFS += -DBOOT_BENCH
 endif
