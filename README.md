@@ -14,7 +14,7 @@ Before building or flashing the project, you must populate specific directories 
     *   `backup/flash_backup_mario.bin`
     *   `backup/internal_flash_backup_zelda.bin`
     *   `backup/flash_backup_zelda.bin`
-*   **Retro-Go ROMs (`retro-go-sd/roms/`):** Place game ROM files in the appropriate subdirectory (e.g. `nes/` for NES games, `gb/` for Game Boy games, `sms/` for Sega Master System games) to package them for Retro-Go.
+*   **Retro-Go ROMs (`retro-go-sd/roms/`):** Place game ROM files in the appropriate subdirectory to package them for Retro-Go.
 
 ### 2. Turnkey Compilation & Flashing (Docker)
 The simplest and most reliable way to compile and flash the project is using **Docker**. This encapsulates the compiler, Python scripts, and dependencies inside a container, removing any host setup overhead.
