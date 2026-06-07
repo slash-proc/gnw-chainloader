@@ -16,6 +16,7 @@ extern uint16_t gui_fg_color;
 extern uint16_t gui_accent_color;
 extern uint16_t gui_border_color;
 extern uint16_t gui_footer_color;
+extern uint16_t gui_header_color;
 /* Right-to-left UI flag (see gui.c). Only layout/chrome mirror; glyphs never flip. */
 extern bool gui_rtl;
 #define COLOR_BG      gui_bg_color
@@ -23,6 +24,7 @@ extern bool gui_rtl;
 #define COLOR_ACCENT  gui_accent_color
 #define COLOR_BORDER  gui_border_color
 #define COLOR_FOOTER  gui_footer_color
+#define COLOR_HEADER  gui_header_color
 #define COLOR_GRAY    RGB565(0x60, 0x60, 0x60) // Muted Gray
 #define COLOR_GREEN   RGB565(0x2E, 0xCC, 0x71) // Success Green
 #define COLOR_RED     RGB565(0xE7, 0x4C, 0x3C) // Error Red
@@ -53,6 +55,11 @@ typedef struct {
 /* Decode one UTF-8 scalar, advancing *p past it; malformed bytes yield U+FFFD
  * and consume one byte (so callers always terminate). Defined in gui_text.c. */
 uint32_t gui_utf8_next(const uint8_t **p);
+/* Next DISPLAY codepoint: like gui_utf8_next, but a "{NAME}" matching a known icon
+ * shortcode (table in gui_text.c) is consumed whole and returned as its glyph
+ * codepoint; an unknown/malformed brace group is left literal. Width + draw both
+ * use this so they stay in lock-step. */
+uint32_t gui_text_next(const uint8_t **p);
 /* Resolve a Unicode codepoint to a drawable glyph: in-core ASCII fast-path, then
  * the registered external resolver (the language module's script font), else the
  * '?' box. Always succeeds. */

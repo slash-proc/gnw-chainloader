@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3 Player",
+  "MS_PLAYLIST": "Playlist",
+  "MS_PREV": "Prev",
+  "MS_SEEK": "Seek",
+  "MS_PLAY": "Play",
+  "MS_PAUSE": "Pause",
+  "MS_NEXT": "Next",
+  "MS_LIST": "List",
+  "MS_ADD": "Add",
+  "MS_REMOVE": "Remove",
+  "MS_EMPTY": "Playlist is empty.",
+  "MS_HELP_ADD": "Open Playlist, then Add songs or folders.",
+  "MS_STOPPED": "Stopped.",
+  "MS_HELP_PLAY": "Press Play, or open Playlist.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Scrub  {BTN_B} Cancel  {BTN_A} Go",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Select  {BTN_B} Quit  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Song  {BTN_LEFTRIGHT} Action  {BTN_B} Close  {BTN_A} Select"
+}

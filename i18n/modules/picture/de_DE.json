@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Bildbetrachter",
+  "MS_LOADING": "Lädt...",
+  "MS_CANCEL": "B zum Abbrechen drücken",
+  "MS_ERR_OPEN": "Bild kann nicht geöffnet werden.",
+  "MS_ERR_DECODE": "Nicht unterstütztes oder defektes Bild.",
+  "MS_EMPTY": "Keine Bilder in diesem Ordner.",
+  "MS_HELP_PICK": "Ein Bild aus dem Dateibrowser öffnen.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Zurück/Weiter  GAME Zoom  {BTN_B} Beenden  {BTN_A} Vollbild"
+}

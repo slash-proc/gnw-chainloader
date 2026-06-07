@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "storage/partition.h"   /* partition_info_t */
+#include "storage/vfs.h"          /* vfs_stream_t (font glyph paging) */
 #include "gui.h"                  /* gui_ext_glyph_fn */
 
 /*
@@ -23,12 +24,12 @@
 typedef struct {
     /* Filesystem — the core owns the FS drivers + the partition table. */
     int      (*read_file)(const char *path, void *dst, uint32_t max, uint32_t *out_size);
-    int      (*read_lang_lfs)(const char *path, void *dst, uint32_t max, uint32_t *out_size, uint16_t abi);
+    int      (*lfs_read)(const char *path, void *dst, uint32_t max, uint32_t *out_size); /* LFS-only, fast */
     uint32_t (*lfs_lang_version)(const char *path, uint16_t abi);
     int      (*lfs_free_kb)(void);
     int      (*lfs_write_file)(const char *path, const void *data, uint32_t len);
     int      (*lfs_has)(const char *path);
-    void     (*lfs_enum_langs)(uint16_t abi, void (*cb)(const char *, const char *, const char *));
+    void     (*lfs_enum_dir)(const char *dir, void (*cb)(const char *name)); /* file names only */
     int      (*sd_dir_exists)(const char *dir);
     int      (*sd_list_langs)(char *names, int stride, int max);
     bool     (*is_fat_rw_loaded)(void);
@@ -41,6 +42,16 @@ typedef struct {
     /* Core render/string seams the module drives. */
     void (*strings_set_active)(const char *const *table);
     void (*set_ext_glyph)(gui_ext_glyph_fn fn);
+    /* Handle-based streaming reads for on-demand glyph paging: the font pager opens a
+     * complete CJK font on LittleFS once, then seeks+reads individual glyph bitmaps. */
+    int  (*stream_open)(vfs_stream_t *s, const char *path);
+    int  (*stream_read)(vfs_stream_t *s, void *buf, uint32_t n);
+    int  (*stream_seek)(vfs_stream_t *s, uint32_t off);
+    void (*stream_close)(vfs_stream_t *s);
+    /* Map a contiguous file (a .fnt) to its memory-mapped flash address, for XIP (read in place
+     * from the FAT store, no RAM buffer). Returns -1 if not a contiguous file on a mappable FAT
+     * partition. Appended last so existing callback offsets are unchanged. */
+    int  (*map_file)(const char *path, uint32_t *addr, uint32_t *size);
 } lang_host_t;
 
 /* Filled by the module's init_module; the core's thin ui/i18n.c delegates to it.

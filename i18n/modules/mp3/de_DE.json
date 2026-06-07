@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3-Player",
+  "MS_PLAYLIST": "Playlist",
+  "MS_PREV": "Zurück",
+  "MS_SEEK": "Spulen",
+  "MS_PLAY": "Play",
+  "MS_PAUSE": "Pause",
+  "MS_NEXT": "Weiter",
+  "MS_LIST": "Playlist",
+  "MS_ADD": "Hinzufügen",
+  "MS_REMOVE": "Entfernen",
+  "MS_EMPTY": "Playlist ist leer.",
+  "MS_HELP_ADD": "Playlist öffnen, dann Titel hinzufügen.",
+  "MS_STOPPED": "Angehalten.",
+  "MS_HELP_PLAY": "Play drücken oder Playlist öffnen.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Spulen  {BTN_B} Abbrechen  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Auswählen  {BTN_B} Beenden  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Titel  {BTN_LEFTRIGHT} Aktion  {BTN_B} Schließen  {BTN_A} Wählen"
+}

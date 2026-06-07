@@ -128,3 +128,46 @@ uint32_t fat_ro_total_sectors(void) {
     if (s_fs.fs_type == 0) return 0;   /* not mounted */
     return (uint32_t)(s_fs.n_fatent - 2) * s_fs.csize;
 }
+
+/* Map a file on a flash-backed FAT volume to its absolute memory-mapped flash address, for
+ * execute-in-place. Mounts `base` on the in-core RO volume, returns 0 and the address+size of
+ * the file's FIRST data cluster, then unmounts. Correct only when the file is CONTIGUOUS
+ * (f_expand'd at install / verified by scripts/debug/fat_contig.py); a fragmented file cannot
+ * be XIP'd and the caller must fall back to a RAM copy. Refuses the SD volume (a block device,
+ * not memory-mapped). Self-contained (its own mount), so the loader can call it without
+ * disturbing any loaded-driver mount. */
+int fat_ro_map(uint32_t base, const char *path, uint32_t *out_addr, uint32_t *out_size) {
+    if (base == SDCARD_SENTINEL_ADDR) return -1;   /* SD is a block device, not mappable */
+    fat_partition_base_addr = base;
+    if (f_mount(&s_fs, "", 1) != FR_OK) return -1;
+    int rc = -1;
+    FIL f;
+    if (f_open(&f, path, FA_READ) == FR_OK) {
+        DWORD sclust = f.obj.sclust;
+        FSIZE_t sz = f_size(&f);
+        f_close(&f);
+        /* XIP demands ONE contiguous run. Walk the FAT16 chain (the flash FAT is memory-mapped,
+         * so read it directly) and require every link to be the next cluster. A fragmented file
+         * -- e.g. a module dropped in via the browser's generic write instead of f_expand'd by
+         * the installer, or one fragmented by later churn -- fails here and returns -1, so the
+         * loader falls back to a full RAM copy instead of executing scattered clusters as if
+         * they were one run. (FAT16; our module store is FAT16.) */
+        DWORD csz = (DWORD)s_fs.csize * 512u;
+        DWORD ncl = csz ? (((uint32_t)sz + csz - 1) / csz) : 0;
+        if (sclust >= 2 && ncl >= 1 && (sclust + ncl - 1) < s_fs.n_fatent) {
+            const uint16_t *fat16 = (const uint16_t *)(base + (uint32_t)s_fs.fatbase * 512u);
+            bool contig = true;
+            for (DWORD k = 0; k + 1 < ncl; k++) {
+                if (fat16[sclust + k] != sclust + k + 1) { contig = false; break; }
+            }
+            if (contig) {
+                DWORD sect = s_fs.database + (DWORD)(sclust - 2) * s_fs.csize;
+                *out_addr = base + (uint32_t)sect * 512u;
+                *out_size = (uint32_t)sz;
+                rc = 0;
+            }
+        }
+    }
+    f_mount(NULL, "", 0);
+    return rc;
+}

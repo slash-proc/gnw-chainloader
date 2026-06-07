@@ -40,6 +40,8 @@ The memory map is hardcoded in the linker scripts and source code. This table is
 
 The chainloader reservation was raised from 32 KiB to 40 KiB (`STM32H7B0_FLASH_STUB.ld`, `LENGTH = 40K`), so `RETROGO_BASE` moved to `0x0800A000` (`src/common/memory_map.h`) and the Retro-Go payload now spans 216 KiB (`RG_INTFLASH_ADDRESS` / `RG_FLASH_LENGTH` in `Makefile.common` match). The similarly named `STM32H7B0VBTx.ld` is the OFW patch linker script (§3), not the chainloader's.
 
+The 40 KiB holds the uncompressed stub plus the LZMA-compressed RAM-app blob; the Makefile `Free space` line is the headroom metric. The app is compressed with an ARMTHUMB BCJ pre-filter then raw LZMA1 (`lc1/lp1/pb1`, 128 KiB dict), and `stub_main.c` reverses both at boot (`LzmaDecode` with props byte `0x37`, then `armthumb_unfilter()` in place). The encoder (Makefile xz call) and decoder (stub props + inverse BCJ) MUST stay in lock-step or the app will not decompress and the device will not boot. See [docs/size-optimization.md](docs/size-optimization.md) for the full pipeline, the LZMA dynamics, and the size-tuning methodology.
+
 Bank structure:
 
 *   **Bank 1 (`0x08000000` – `0x0803FFFF`):** chainloader (40 KiB, configured in `STM32H7B0_FLASH_STUB.ld`) followed by the Retro-Go Launcher (216 KiB).
@@ -72,13 +74,13 @@ into less).
 **AXI-SRAM (`0x24000000`–`0x24100000`) — three non-overlapping spans:**
 
 ```
-0x24000000  app: code + data, then .bss ................ 507 KB  USED
+0x24000000  app: code + data, then .bss ................ ~521 KB USED
               (the two 320x240x2 framebuffers alone are 300 KB of this)
-0x2407EC54  ── free gap ──............................. 260 KB  FREE
-0x240C0000  MODULE POOL  (bump-up from base; UI stack     256 KB  RANGE, ~37 KB used:
-              descends from _estack, −64 KB guard)          theme.bin ~1.7 KB resident;
-                                                            fatfs ~18.5 KB / lfs_rw ~16.5 KB
-0x24100000  _estack (top)                                   loaded on demand
+0x24082480  ── free gap ──.............................  ~55 KB  app/lzma headroom
+0x24090000  MODULE POOL  (bump-up from base; UI stack     384 KB  usable (−64 KB guard);
+              descends from _estack)                        residents ~91 KB (language ~52,
+                                                            fatfs ~20, lfs_rw ~17, theme ~2),
+0x24100000  _estack (top)                                   ~293 KB for one live feature
 ```
 
 **D2 AHB-SRAM1 (`0x30000000`–`0x30010000`, 64 KB) — fastcap owns the whole bank when live:**
@@ -107,10 +109,15 @@ Key facts that make this safe to reason about:
   from AXI by construction, so it can never re-collide. *(An earlier layout hardcoded
   fastcap into `0x240A0000`+ and overwrote loaded modules → bus fault; that is the
   cautionary tale this map exists to prevent.)*
-- **Module pool is 256 KB** (`MODULE_POOL_BASE = 0x240C0000`; shrunk from 384 KB now that
-  modules are PIE and relocated to the pool base, making it a one-constant change). This grew
-  the free gap to ~260 KB for a larger `lzma_heap`. With ~37 KB of modules and a 64 KB stack
-  guard, the pool still has ~155 KB of headroom.
+- **Module pool is 384 KB usable** (`MODULE_POOL_BASE = 0x24090000`; lowered from `0x240C0000`
+  (192 KB) into the free AXI gap below it so a feature module like the ~104 KB picture viewer
+  loads past the residents — that overflow, "Out of module memory", is what drove the change).
+  Modules are PIE relocated to the pool base, so it stays a one-constant change. With the resident
+  modules (~91 KB: language ~52 / fatfs ~20 / lfs_rw ~17 / theme ~2) and a 64 KB stack guard,
+  ~293 KB remains for the one live transient feature module. The 1 MB AXI-SRAM still has plenty
+  of room below; growing the pool further is the same one-constant change. The full tiered
+  module-memory design (this pool, the borrowed D2 scratch, and the planned OSPI XIP store) is in
+  [docs/memory-architecture.md](docs/memory-architecture.md).
 - **Crash log in D3 SRAM** (`0x38000000`, otherwise unused): the chainloader's `HardFault`
   handler (`system/crash_log.c`) records the fault-status registers (HFSR/CFSR/MMFAR/BFAR) and
   the stacked exception frame, then halts — so a fault can be diagnosed over SWD after the fact
@@ -180,6 +187,20 @@ The OFW image is patched during the build phase by `gnwmanager`'s host-side engi
 3.  **Hook Injection:** The recovery hook (compiled from [src/patch/main.c](src/patch/main.c)) is appended into the unused internal-flash tail past `STOCK_ROM_END`.
 4.  **Reset-Vector Redirect:** The reset vector is rewritten to point at the injected `bootloader()` hook (see §4) instead of the stock reset handler. (The entry symbol is named `bootloader` so the patch builds against unmodified `gnwmanager`, whose script does `replace(0x4, "bootloader")`; the resulting reset-vector value is unchanged — `0x08018101` Mario, `0x0801B3E1` Zelda.)
 5.  **Warm-boot power-on patches:** Two byte-patches per firmware make the stock OFW boot normally after a *warm* reset (our bank swap into the OFW), not only a power-button power-on — see [docs/ofw-poweroff-on-warm-switch.md](docs/ofw-poweroff-on-warm-switch.md). They NOP the OFW's `PWR_CPUCR.SBF` boot-mode gate (so display init always runs) and turn the in-loop "state-6" standby branch into an unconditional skip. Without them, a warm switch left the screen dark until a manual power-button press.
+
+### OFW Integrity Verification (CRC gate)
+
+The chainloader copies an OFW backup from external flash into Bank 2 and boots it. A backup is *recognized* only by its reset vector (`0x08018101` Mario / `0x0801B3E1` Zelda), with no integrity check — so a wiped, corrupt, half-flashed, or merely *unpatched* image (stock, or built by a different/older patch) is indistinguishable from a good one and would bank-swap into a console that cannot boot or return to the launcher. To close that gap the patch pipeline bakes a CRC-32 signature of each image, and the chainloader re-checks it before every copy.
+
+**Baked signatures.** [scripts/build/gen_ofw_crc.py](scripts/build/gen_ofw_crc.py) (`make ofw-crc`, after `make patch`) computes, from the deterministic patch outputs, a per-console record holding two CRCs and writes them to the committed header `src/common/ofw_crc.h`:
+- **internal_crc** — the full 128 KiB backup image (`patched_internal_<game>.bin`), the bytes copied into Bank 2.
+- **asset_crc** — the *static* window of the external asset blob (`patched_external_<game>.bin`), i.e. the immutable ROM/code/asset region with the runtime-mutable **save regions excluded** (otherwise playing a game would change the CRC). The windows are: Mario `[0, blob_len − 0x2000)` (the 8 KiB NVRAM is always the trailing slice of the shortened blob — see `mario.py`); Zelda `[0x20000, 0x3254A0)` (the stock encrypted span; saves live before `0x20000` and after `0x3E0000`, and Zelda is never shortened).
+
+The two CRCs together form a **pairing**: a boot is allowed only when both the backup image and the asset blob it will reach for match the *same* baked record, so a mismatched internal/asset combination is also rejected. The values are device-invariant (stock ROMs are SHA1-pinned, saves excluded), so this is a once-per-patch commit, not part of the normal build.
+
+**CRC convention.** The STM32H7 hardware CRC unit in its reset-default configuration (poly `0x04C11DB7`, init `0xFFFFFFFF`, 32-bit, no input/output reflection — CRC-32/MPEG-2), fed one little-endian 32-bit word at a time. `gen_ofw_crc.py` models that operation exactly, so host and device agree by construction (the specific polynomial is irrelevant — it is a shared integrity token).
+
+**Device gate.** [src/chainloader/system/ofw_verify.c](src/chainloader/system/ofw_verify.c) drives the hardware CRC unit (`ofw_crc32`) over the mapped external-flash regions. `ofw_verify_by_spi()` is called at the top of `partition_flash_ofw()` *before* erasing Bank 2; on any mismatch (or a region past the detected flash, or an unknown offset) it refuses, leaves Bank 2 untouched, and the caller stays in the menu — both the menu A-press (`menu.c`) and the boot-time god-mode LEFT/RIGHT override (`main.c`) honor the refusal, falling through to the launcher rather than jumping to an unbootable Bank 2 (STABILITY IS LAW). `ofw_verify_addr()` lets the Partition Viewer mark a recognized-but-mismatched OFW/asset region as `UNKNOWN` (computed once per selection — the CRC sweep is too heavy for a per-frame draw). Retro-Go is not covered by this gate.
 
 ---
 
@@ -580,11 +601,18 @@ core, else fall back" pattern as the theme system):
 
 - **Shared script fonts:** per-script `.fnt` blobs on the filesystem
   (`/i18n/fonts/<script>.fnt`) supply non-ASCII glyphs (accented Latin, CJK). The
-  module's `font_ext.c` reads them whole into RAM and binary-searches; each blob
-  carries a `ref_top` so its glyphs share the in-core ASCII baseline exactly. Two
-  slots are tried in order — the active language's **script** font, then an always-on
-  **Latin base** (`latin.fnt`, loaded once) — so accented Latin renders in any
-  language and even before one is chosen (e.g. an SD filename `Scheiße.txt`).
+  module's `font_ext.c` reads them **LFS-only** (fonts are installed to LittleFS; the
+  SD is delivery-only, so a stale SD copy can't shadow them); each blob carries a
+  `ref_top` so its glyphs share the in-core ASCII baseline exactly. A small font is read
+  whole into RAM and binary-searched; a **complete CJK** font is too big, so it is held
+  open on LittleFS and **paged glyph-by-glyph** (binary-search `codepoints[]` by seek,
+  bitmap on demand, small LRU) through the handle-based `vfs_stream_t` primitive the
+  feature/MP3 file path also uses. Three slots are tried in order — the active language's
+  **script** font, an always-on **Latin base** (`latin.fnt`), then an on-demand **AUX**
+  font by Unicode range — so accented Latin renders in any language (e.g. `Scheiße.txt`)
+  and an arbitrary CJK filename renders under any UI. `latin.fnt` also carries
+  controller/logo icon glyphs the `{TOKEN}` text replacer (`gui_text.c` `gui_text_next`)
+  draws from a `{NAME}` shortcode. Detail: [docs/i18n.md](docs/i18n.md).
 - **Language packs (discovered, not registered):** per-language `.lang` files
   (`/i18n/<code>.lang`, magic `'LNG2'`) hold the translated strings and
   **self-describe** — each 76-byte header carries its own locale code + endonym +
@@ -601,8 +629,20 @@ is in-core English. SD distribution runs through the **transient installer modul
 (`/modules/installer.bin`, `MOD_FLAG_TRANSIENT`): if the SD has new/newer
 `<code>.lang` packs (plus the fonts they declare), the core shows a per-class
 confirm pop-up at boot ("Install N language(s) from SD?") and on accept commits them
-into LittleFS's `/i18n` data folder, never a bank. Installed languages apply live
+into LittleFS's `/i18n` data folder (deleting each SD source after a successful install,
+since the SD is delivery-only), never a bank. Installed languages apply live
 (the core calls the language module's `rediscover()`, then re-applies). So a user
 drops `build/i18n/` onto the SD's `/i18n/` (a 1:1 mirror, no renaming). Assets are
 cooked by `make i18n` (`make push_i18n` is the dev shortcut). Full reference, file
 formats, and "adding a language" steps: [docs/i18n.md](docs/i18n.md).
+
+**Module translations** are self-contained in each module binary (no device-side
+files): a module's per-language strings live in `i18n/modules/<module>/<lang>.json`,
+cooked by `scripts/build/cook_modstrings.py` (also run by `make i18n`) into an
+`[id][lang]` matrix compiled into the module; the module resolves them via `ms(MS_*)`
+after picking its column from `gui->lang_code()` (the `gui_api_t` seam exposes `tr()` +
+`lang_code()`), English fallback. RTL module text is pre-shaped at cook time
+(token-safe footers, no mirror); a feature module's **menu entry** is localized by
+packing its title per language into the module header (`menu_label_xlat`), which the
+core resolves live at discovery without loading the module. The MP3 player is the first
+consumer. Detail: [docs/i18n.md](docs/i18n.md).

@@ -168,6 +168,22 @@ static int fat_vfs_open(const char *path, int mode, void **file_ctx) {
     return 0;
 }
 
+/* Create `path` CONTIGUOUS (f_expand pre-allocates one cluster run) so an installed module .bin is
+ * XIP-able in place. Memory-mapped FAT (EXT-FAT) only; the install path never uses this on the SD. */
+static int fat_vfs_open_expand(const char *path, uint32_t size, void **file_ctx) {
+    int idx = -1;
+    for (int i = 0; i < 2; i++) if (!g_fat_files_used[i]) { idx = i; break; }
+    if (idx < 0) return -1;
+    if (f_open(&g_fat_files[idx], path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return -1;
+    /* Pre-allocate one contiguous run, but ONLY on the memory-mapped EXT-FAT (never the SD). Best
+     * effort: if no contiguous run is free the file is left fragmented and the loader full-copies it. */
+    if (size && fat_partition_base_addr >= 0x90000000u && fat_partition_base_addr < 0x94000000u)
+        f_expand(&g_fat_files[idx], (FSIZE_t)size, 1);
+    g_fat_files_used[idx] = true;
+    *file_ctx = &g_fat_files[idx];
+    return 0;
+}
+
 static int fat_vfs_close(void *file_ctx) {
     FIL *file = (FIL *)file_ctx;
     f_close(file);
@@ -192,6 +208,10 @@ static int fat_vfs_write(void *file_ctx, const void *buf, size_t len, size_t *wr
     if (f_write((FIL *)file_ctx, buf, len, &w) != FR_OK) return -1;
     *written_len = w;
     return 0;
+}
+
+static int fat_vfs_seek(void *file_ctx, uint32_t offset) {
+    return f_lseek((FIL *)file_ctx, offset) == FR_OK ? 0 : -1;
 }
 
 static int fat_vfs_unlink(const char *path) {
@@ -223,10 +243,12 @@ __attribute__((section(".text.init_module"))) void init_module(vfs_driver_t *drv
     drv->readdir = fat_vfs_readdir;
     drv->closedir = fat_vfs_closedir;
     drv->open = fat_vfs_open;
+    drv->open_expand = fat_vfs_open_expand;
     drv->close = fat_vfs_close;
     drv->read = fat_vfs_read;
     drv->write = fat_vfs_write;
     drv->unlink = fat_vfs_unlink;
     drv->mkdir = fat_vfs_mkdir;
     drv->statfs = fat_vfs_statfs;
+    drv->seek = fat_vfs_seek;
 }

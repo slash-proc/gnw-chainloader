@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3播放器",
+  "MS_PLAYLIST": "播放清單",
+  "MS_PREV": "上一首",
+  "MS_SEEK": "定位",
+  "MS_PLAY": "播放",
+  "MS_PAUSE": "暫停",
+  "MS_NEXT": "下一首",
+  "MS_LIST": "清單",
+  "MS_ADD": "新增",
+  "MS_REMOVE": "移除",
+  "MS_EMPTY": "播放清單為空。",
+  "MS_HELP_ADD": "開啟播放清單後新增歌曲。",
+  "MS_STOPPED": "已停止。",
+  "MS_HELP_PLAY": "按播放，或開啟播放清單。",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} 定位  {BTN_B} 取消  {BTN_A} 確定",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} 選擇  {BTN_B} 退出  {BTN_A} 確定",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} 曲目  {BTN_LEFTRIGHT} 操作  {BTN_B} 關閉  {BTN_A} 選擇"
+}

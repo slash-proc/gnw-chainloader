@@ -26,7 +26,9 @@ def main() -> int:
     with ri.session() as dev:
         be = dev.transport.backend
 
-        h.wake(dev)   # dismiss idle-hide so the first real tap counts
+        # Back out to the main menu first (a device left on a sub-page leaves
+        # g_list_main dormant); also dismisses idle-hide so the first tap counts.
+        t.require(h.go_home(dev), "backed out to the main menu (page stack empty)")
         sel0 = h.read_menu_selection(be)
         t.require(0 <= sel0 < MAIN_ITEMS,
                   f"on main menu, selection index in range (got {sel0}) — "

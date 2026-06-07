@@ -1,0 +1,32 @@
+# Python dependencies for the gnw-chainloader firmware build and device tooling.
+#
+# This file covers the core build (asset/font/lang cooking invoked by `make`), the
+# OFW patch pipeline, and the optional retro-go-sd build. Heavy/optional debug tools
+# live in requirements-dev.txt.
+#
+# Install:  pip install -r requirements.txt
+# External (non-pip) tools the build also needs: arm-none-eabi-gcc, host gcc, make,
+# xz, ffmpeg, openocd (see README prerequisites / the Dockerfile).
+
+# --- Core build: asset, font and language cooking (invoked by make) ---
+pyfatfs
+numpy
+Pillow
+fonttools
+python-bidi
+arabic-reshaper
+
+# --- Device tooling + OFW patch pipeline ---
+gnwmanager          # PyPI build; used for flashing/info. The patch step imports the
+                    # vendored gnwmanager submodule directly, never this copy
+                    # (see scripts/common/flashio.py).
+keystone-engine     # ARM assembler used by the submodule's gnw_patch/patch.py;
+                    # not part of gnwmanager's base dependencies.
+pycryptodome        # OFW decrypt/encrypt; also pulled in transitively by gnwmanager.
+
+# --- retro-go-sd build only (optional target: make build_rg) ---
+# Inlines retro-go-sd/requirements.txt and external/zelda3/requirements.txt so the
+# build does not depend on those nested files. Pillow/numpy/gnwmanager/littlefs-python/
+# tamp are already covered above (tamp + littlefs-python come from gnwmanager).
+lz4
+PyYAML

@@ -1,13 +1,17 @@
-patch: patch_mario patch_zelda
+patch: patch-mario patch-zelda
 
-patch_mario: $(BUILD_DIR)/gw_patch_mario.bin
+patch-mario: $(BUILD_DIR)/gw_patch_mario.bin
 	@echo "Applying patch via python script for mario..."
 	python3 scripts/build/patch_firmware.py mario
 	-$(RESTORE_KEYSTONE)
 
-patch_zelda: $(BUILD_DIR)/gw_patch_zelda.bin
+patch-zelda: $(BUILD_DIR)/gw_patch_zelda.bin
 	@echo "Applying patch via python script for zelda..."
 	python3 scripts/build/patch_firmware.py zelda
 	-$(RESTORE_KEYSTONE)
 
-.PHONY: patch patch_mario patch_zelda
+ofw-crc:
+	@echo "Generating baked OFW CRC signatures from patched artifacts..."
+	python3 scripts/build/gen_ofw_crc.py
+
+.PHONY: patch patch-mario patch-zelda ofw-crc

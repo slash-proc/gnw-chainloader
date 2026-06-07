@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Visualizador",
+  "MS_LOADING": "A carregar...",
+  "MS_CANCEL": "Prima B para cancelar",
+  "MS_ERR_OPEN": "Não é possível abrir a imagem.",
+  "MS_ERR_DECODE": "Imagem não suportada ou danificada.",
+  "MS_EMPTY": "Sem imagens nesta pasta.",
+  "MS_HELP_PICK": "Abrir uma imagem no explorador.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Ant/Seg  GAME Zoom  {BTN_B} Sair  {BTN_A} Ecrã"
+}

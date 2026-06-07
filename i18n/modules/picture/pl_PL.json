@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Przeglądarka",
+  "MS_LOADING": "Ładowanie...",
+  "MS_CANCEL": "Naciśnij B, aby anulować",
+  "MS_ERR_OPEN": "Nie można otworzyć obrazu.",
+  "MS_ERR_DECODE": "Nieobsługiwany lub uszkodzony obraz.",
+  "MS_EMPTY": "Brak obrazów w tym folderze.",
+  "MS_HELP_PICK": "Otwórz obraz z przeglądarki plików.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Poprz/Nast  GAME Zoom  {BTN_B} Wyjdź  {BTN_A} Pełny"
+}

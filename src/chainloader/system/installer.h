@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "storage/partition.h"   /* partition_info_t for the generic install primitives */
 
 /*
  * Transient installer module interface.
@@ -28,13 +29,19 @@
  * then loaded again for the commit -- so a declined prompt leaves nothing resident.
  */
 typedef struct {
-    /* Header-only reads (peek a version without buffering the whole file). 0 ok. */
-    int  (*sd_read_header)(const char *path, void *dst, uint32_t n);
-    int  (*lfs_read_header)(const char *path, void *dst, uint32_t n);
-    /* Streaming SD->LittleFS copy of any size (the shared in-core copy loop). 0 ok. */
-    int  (*copy_sd_to_lfs)(const char *sd_path, const char *lfs_path);
-    /* True if a LittleFS path exists (used to skip an already-present script font). */
-    int  (*lfs_has)(const char *path);
+    /* Header peek on ANY partition (version compare without buffering the file). 0 ok. */
+    int  (*read_header)(partition_info_t *part, const char *path, void *dst, uint32_t n);
+    /* Stream-copy a file between partitions; a FAT dest lands CONTIGUOUS (size -> f_expand) for XIP. 0 ok. */
+    int  (*copy)(partition_info_t *src, const char *sp, partition_info_t *dst, const char *dp, uint32_t size);
+    /* Delete a file from a partition; <0 on a read-only partition (no RW driver / write-locked card)
+     * -- which is exactly "delete the source only if it is writable". */
+    int  (*unlink)(partition_info_t *part, const char *path);
+    /* Partition enumeration: scan every source, classify a destination (FAT store vs LFS vs SD). */
+    int  (*part_count)(void);
+    partition_info_t *(*part_info)(int i);
+    bool (*part_is_sd)(const partition_info_t *part);
+    const char *(*part_fs)(const partition_info_t *part);   /* "FAT" / "LFS" / ... */
+    /* Language-pack SD scan helpers (the lang class still lists /i18n on the SD). */
     int  (*sd_dir_exists)(const char *dir);
     int  (*sd_list_langs)(char *names, int stride, int max);
     /* Optional UI seam: install progress (pct 0..100, a short label). May be NULL. */

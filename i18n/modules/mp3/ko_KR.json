@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3 플레이어",
+  "MS_PLAYLIST": "재생목록",
+  "MS_PREV": "이전",
+  "MS_SEEK": "탐색",
+  "MS_PLAY": "재생",
+  "MS_PAUSE": "일시정지",
+  "MS_NEXT": "다음",
+  "MS_LIST": "목록",
+  "MS_ADD": "추가",
+  "MS_REMOVE": "제거",
+  "MS_EMPTY": "재생목록이 비었습니다.",
+  "MS_HELP_ADD": "재생목록을 열고 곡을 추가하세요.",
+  "MS_STOPPED": "정지됨.",
+  "MS_HELP_PLAY": "재생을 누르거나 재생목록을 여세요.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} 탐색  {BTN_B} 취소  {BTN_A} 확인",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} 선택  {BTN_B} 종료  {BTN_A} 확인",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} 곡  {BTN_LEFTRIGHT} 동작  {BTN_B} 닫기  {BTN_A} 선택"
+}

@@ -36,9 +36,12 @@ def english_strings():
 
 
 def strings_for(code):
+    # strings.c holds only the ALL-CAPS fallback; the real UI text (incl. en_US, which
+    # has its own Title-Case override) lives in each pack's strings.json. Always layer
+    # the override when present, so the rendered template matches the live screen.
     s = english_strings()
     d = REPO / "i18n" / "lang" / code / "strings.json"
-    if code != "en_US" and d.exists():
+    if d.exists():
         s.update({k: v for k, v in json.loads(d.read_text()).items() if v})
     return s
 

@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3-speler",
+  "MS_PLAYLIST": "Afspeellijst",
+  "MS_PREV": "Vorige",
+  "MS_SEEK": "Spoelen",
+  "MS_PLAY": "Afspelen",
+  "MS_PAUSE": "Pauze",
+  "MS_NEXT": "Volgende",
+  "MS_LIST": "Lijst",
+  "MS_ADD": "Toevoegen",
+  "MS_REMOVE": "Verwijderen",
+  "MS_EMPTY": "Afspeellijst is leeg.",
+  "MS_HELP_ADD": "Open de afspeellijst en voeg nummers toe.",
+  "MS_STOPPED": "Gestopt.",
+  "MS_HELP_PLAY": "Druk op Afspelen of open de afspeellijst.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Spoelen  {BTN_B} Annuleren  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Kiezen  {BTN_B} Sluiten  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Nummer  {BTN_LEFTRIGHT} Actie  {BTN_B} Sluiten  {BTN_A} Kiezen"
+}

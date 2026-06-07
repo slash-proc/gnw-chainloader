@@ -1,0 +1,10 @@
+# Optional / heavy debug dependencies for the gnw-chainloader debug scripts.
+# Not required to build the firmware; install for the live-capture and tracing tools.
+#
+# Install:  pip install -r requirements-dev.txt   (pulls in requirements.txt too)
+
+-r requirements.txt
+
+capstone                          # disassembly: scripts/debug/trace.py, disasm_stock_buttons.py
+opencv-python                     # fastcap live preview window (scripts/debug/fastcap.py)
+evdev; sys_platform == "linux"    # remote-input replay (scripts/debug/remote_control.py); Linux-only

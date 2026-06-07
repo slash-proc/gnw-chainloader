@@ -10,6 +10,7 @@
 #include "ui/strings.h"
 #include "assets.h"
 #include "system/bench.h"
+#include "system/ofw_verify.h"
 #include "../../common/memory_map.h"
 #include <stdint.h>
 #include <stdbool.h>
@@ -31,7 +32,7 @@ static partition_info_t found_partitions[MAX_PARTITIONS];
 static int partition_count = 0;
 uint32_t total_ext_flash_size = 0;
 
-const char *partition_current_phase = "";   /* shown on the scan progress screen */
+string_id_t partition_current_phase = STR_PHASE_MODULES;   /* shown (tr()'d) on the scan progress screen */
 
 typedef enum {
     STATE_IDLE,
@@ -102,13 +103,13 @@ static void sort_partitions(void) {
     }
 }
 
-static void add_partition(uint32_t addr, uint32_t size, const char* type, const char* details) {
+static void add_partition(uint32_t addr, uint32_t size, const char* type, string_id_t detail_id, uint32_t detail_num) {
     if (partition_count < MAX_PARTITIONS) {
         found_partitions[partition_count].address = addr;
         found_partitions[partition_count].size = size;
         found_partitions[partition_count].type = type;
-        strncpy(found_partitions[partition_count].details, details, sizeof(found_partitions[partition_count].details) - 1);
-        found_partitions[partition_count].details[sizeof(found_partitions[partition_count].details) - 1] = '\0';
+        found_partitions[partition_count].detail_id = detail_id;
+        found_partitions[partition_count].detail_num = detail_num;
         partition_count++;
     }
 }
@@ -171,13 +172,13 @@ static void find_free_space(uint32_t start, uint32_t end) {
         if (found_partitions[i].address < start || found_partitions[i].address >= end)
             continue;
         if (found_partitions[i].address > current_addr) {
-            add_partition(current_addr, found_partitions[i].address - current_addr, "FREE", "Empty");
+            add_partition(current_addr, found_partitions[i].address - current_addr, "FREE", STR_DETAIL_EMPTY, 0);
         }
         uint32_t next_addr = found_partitions[i].address + found_partitions[i].size;
         if (next_addr > current_addr) current_addr = next_addr;
     }
     if (current_addr < end) {
-        add_partition(current_addr, end - current_addr, "FREE", "Empty");
+        add_partition(current_addr, end - current_addr, "FREE", STR_DETAIL_EMPTY, 0);
     }
 }
 
@@ -194,7 +195,7 @@ static const char* identify_firmware(uint32_t addr) {
 
 typedef struct {
     const char *type;
-    const char *details;
+    string_id_t detail_id;
     uint32_t size;        /* 0 for dynamic scan */
     uint32_t sig_offset;
     const uint8_t *sig;
@@ -202,12 +203,12 @@ typedef struct {
 } sig_probe_t;
 
 static const sig_probe_t STATIC_PROBES[] = {
-    {"Zelda",    "Assets",     4*1024*1024, 0,       (const uint8_t*)"\xBE\xBA\xAD\xFE", 4},
-    {"Zelda",    "Assets",     4*1024*1024, 0x4FFEB, (const uint8_t*)"ZELDA", 5},
-    {"Mario",    "Assets",     1*1024*1024, 0,       (const uint8_t*)"\x78\xD8\xA9\x10", 4},
-    {"Mario",    "OFW Backup", 128*1024,    4,       (const uint8_t*)"\x01\x81\x01\x08", 4},
-    {"Zelda",    "OFW Backup", 128*1024,    4,       (const uint8_t*)"\xE1\xB3\x01\x08", 4},
-    {"Retro-Go", "APP BIN",    0,           0x400,   (const uint8_t*)"\x01\x00\x00\x00", 4},
+    {"Zelda",    STR_DETAIL_ASSETS,     4*1024*1024, 0,       (const uint8_t*)"\xBE\xBA\xAD\xFE", 4},
+    {"Zelda",    STR_DETAIL_ASSETS,     4*1024*1024, 0x4FFEB, (const uint8_t*)"ZELDA", 5},
+    {"Mario",    STR_DETAIL_ASSETS,     1*1024*1024, 0,       (const uint8_t*)"\x78\xD8\xA9\x10", 4},
+    {"Mario",    STR_DETAIL_OFW_BACKUP, 128*1024,    4,       (const uint8_t*)"\x01\x81\x01\x08", 4},
+    {"Zelda",    STR_DETAIL_OFW_BACKUP, 128*1024,    4,       (const uint8_t*)"\xE1\xB3\x01\x08", 4},
+    {"Retro-Go", STR_DETAIL_APP_BIN,    0,           0x400,   (const uint8_t*)"\x01\x00\x00\x00", 4},
 };
 
 static void check_address(uint32_t addr) {
@@ -236,8 +237,7 @@ static void check_address(uint32_t addr) {
             if (memcmp((const uint8_t*)(addr + p->sig_offset), p->sig, p->sig_len) == 0) {
                 uint32_t size = p->size;
                 const char *type = p->type;
-                char details[32];
-                strcpy(details, p->details);
+                string_id_t detail_id = p->detail_id;
 
                 if (size == 0) {
                     if (strcmp(type, "Retro-Go") == 0) {
@@ -254,10 +254,10 @@ static void check_address(uint32_t addr) {
                     }
                 }
                 if (addr + size <= bank_end) {
-                    if (is_internal && strcmp(details, "OFW Backup") == 0) {
-                        strcpy(details, "APP BIN");
+                    if (is_internal && detail_id == STR_DETAIL_OFW_BACKUP) {
+                        detail_id = STR_DETAIL_APP_BIN;
                     }
-                    add_partition(addr, size, type, details);
+                    add_partition(addr, size, type, detail_id, 0);
                     return;
                 }
             }
@@ -266,16 +266,29 @@ static void check_address(uint32_t addr) {
 
     if (is_internal && board_is_valid_app(addr)) {
         if (addr == BANK1_BASE) {
-            add_partition(addr, 0x8000, "Chainloader", "GNW-Chainloader");
+            add_partition(addr, 0x8000, "Chainloader", STR_DETAIL_CHAINLOADER, 0);
         } else {
-            add_partition(addr, 128*1024, identify_firmware(addr), "APP BIN");
+            add_partition(addr, 128*1024, identify_firmware(addr), STR_DETAIL_APP_BIN, 0);
         }
         return;
     }
 
     if (sector[510] == 0x55 && sector[511] == 0xAA) {
         if (sector[0] == 0xEB || sector[0] == 0xE9) {
-            add_partition(addr, 1024 * 1024, "FAT", "Filesystem");
+            /* Size from the BPB: bytes-per-sector (0x0B) times the total sector count (the 16-bit
+             * field at 0x13, or the 32-bit field at 0x20 when that is zero). A flash FAT partition
+             * (the module store) can be any size, so never assume 1 MiB; fall back to 1 MiB only if
+             * the BPB looks implausible or the computed size would run past the bank. */
+            uint32_t bps   = sector[0x0B] | (sector[0x0C] << 8);
+            uint32_t tot16 = sector[0x13] | (sector[0x14] << 8);
+            uint32_t tot32 = sector[0x20] | (sector[0x21] << 8) | (sector[0x22] << 16) | (sector[0x23] << 24);
+            uint32_t total_sectors = tot16 ? tot16 : tot32;
+            uint32_t fat_size = 1024 * 1024;
+            if (bps >= 512 && bps <= 4096 && total_sectors &&
+                (uint64_t)total_sectors * bps <= (uint64_t)(bank_end - addr)) {
+                fat_size = total_sectors * bps;
+            }
+            add_partition(addr, fat_size, "FAT", STR_DETAIL_FS, 0);
             return;
         }
     }
@@ -283,10 +296,7 @@ static void check_address(uint32_t addr) {
     if (memcmp(sector, "FROG", 4) == 0) {
         uint16_t num_entries = sector[6] | (sector[7] << 8);
         uint32_t bin_sz = sector[8] | (sector[9] << 8) | (sector[10] << 16) | (sector[11] << 24);
-        char detail_buf[32];
-        strcpy(detail_buf, "Entries: ");
-        int_to_str(num_entries, detail_buf + strlen(detail_buf));
-        add_partition(addr, bin_sz, "FrogFS", detail_buf);
+        add_partition(addr, bin_sz, "FrogFS", STR_FROG_ENTRIES, num_entries);
         return;
     }
 
@@ -305,10 +315,7 @@ static void check_address(uint32_t addr) {
                     if (block_addr >= bank_end - (2 * block_size)) phys_start = bank_end - size;
                 }
                 if (phys_start >= (is_internal ? BANK1_BASE : EXT_FLASH_BASE) && phys_start + size <= bank_end) {
-                    char detail_buf[32];
-                    strcpy(detail_buf, "Blocks: ");
-                    int_to_str(block_count, detail_buf + strlen(detail_buf));
-                    add_partition(phys_start, size, "LittleFS", detail_buf);
+                    add_partition(phys_start, size, "LittleFS", STR_LFS_BLOCKS, block_count);
                     return;
                 }
             }
@@ -335,7 +342,7 @@ void partition_scan_start(void) {
     g_scan.range_start = BANK1_BASE;
     g_scan.range_end = BANK1_BASE + BANK_SIZE;
     g_scan.min_stride = 16384;
-    partition_current_phase = "Modules";
+    partition_current_phase = STR_PHASE_MODULES;
 }
 
 void partition_scan_update(void) {
@@ -405,7 +412,7 @@ void partition_scan_update(void) {
                 if (present) {
                     uint32_t sectors = 0;
                     if (sd_probe(&sectors))
-                        add_partition(SDCARD_SENTINEL_ADDR, sectors, "FAT", "SD CARD");
+                        add_partition(SDCARD_SENTINEL_ADDR, sectors, "FAT", STR_DIV_SDCARD, 0);
                 }
                 g_scan.state = STATE_PROBE_LFS;
                 return;
@@ -437,7 +444,7 @@ void partition_scan_update(void) {
                 if (have_lfs_partition() || total_ext_flash_size == 0)
                     g_modules_ready = true;
                 g_scan.state = STATE_SCAN_INT1;
-                partition_current_phase = "Internal Flash";
+                partition_current_phase = STR_PHASE_INT_FLASH;
                 return;
 
             case STATE_GAP_INT2:
@@ -452,7 +459,7 @@ void partition_scan_update(void) {
                     g_scan.range_start = EXT_FLASH_BASE;
                     g_scan.range_end = EXT_FLASH_BASE + total_ext_flash_size;
                     g_scan.min_stride = 65536;
-                    partition_current_phase = "External Flash";
+                    partition_current_phase = STR_PHASE_EXT_FLASH;
                 } else {
                     g_scan.state = STATE_COMPLETE;
                     sort_partitions();
@@ -498,7 +505,7 @@ bool partition_redetect_sd(void) {
 
     if (present) {
         if (sd_idx < 0) {                      /* card appeared */
-            add_partition(SDCARD_SENTINEL_ADDR, sectors, "FAT", "SD CARD");
+            add_partition(SDCARD_SENTINEL_ADDR, sectors, "FAT", STR_DIV_SDCARD, 0);
             sort_partitions();
             return true;
         }
@@ -585,17 +592,25 @@ void partition_erase(uint32_t addr, uint32_t size) {
     update_progress_ui(100, tr(STR_ERASE_COMPLETE), tr(STR_DONE));
 }
 
-void partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size) {
+bool partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size) {
     char status_msg[64];
-    str_lcpy(status_msg, sizeof(status_msg), tr(STR_PREPARING));
-    str_lcat(status_msg, sizeof(status_msg), name);
-    str_lcat(status_msg, sizeof(status_msg), "...");
+    str_fmt1_str(status_msg, sizeof(status_msg), tr(STR_PREPARING), name);
     update_progress_ui(0, tr(STR_FLASHING), status_msg);
+
+    /* Verify the backup image AND its paired asset blob against the baked CRC
+     * signatures BEFORE erasing Bank 2. A recognized-but-mismatched/corrupt OFW
+     * is refused here, so we never swap into an OFW we cannot boot (STABILITY IS
+     * LAW). The "PREPARING" screen above stays up during the CRC sweep. */
+    if (!ofw_verify_by_spi(spi_offset)) {
+        update_progress_ui(0, tr(STR_FLASH_FAILED), tr(STR_ERROR));
+        HAL_Delay(2000);
+        return false;
+    }
 
     if (!board_flash_erase()) {
         update_progress_ui(0, tr(STR_FLASH_FAILED), tr(STR_ERROR));
         HAL_Delay(2000);
-        return;
+        return false;
     }
     
     uint8_t buffer[4096];
@@ -609,15 +624,12 @@ void partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size) {
             int err_pct = (written * 100 / total);
             update_progress_ui(err_pct, tr(STR_FLASH_FAILED), tr(STR_WRITE_ERROR));
             HAL_Delay(2000);
-            return;
+            return false;
         }
         written += chunk;
         
         int pct = (written * 100 / total);
-        char kb[16]; int_to_str(written / 1024, kb);
-        str_lcpy(status_msg, sizeof(status_msg), tr(STR_WRITING));
-        str_lcat(status_msg, sizeof(status_msg), kb);
-        str_lcat(status_msg, sizeof(status_msg), "KB...");
+        str_fmt1_int(status_msg, sizeof(status_msg), tr(STR_WRITING), (int)(written / 1024));
         update_progress_ui(pct, tr(STR_FLASHING), status_msg);
     }
     
@@ -630,4 +642,5 @@ void partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size) {
     theme_modules_init();
     update_progress_ui(100, tr(STR_FLASH_OK), tr(STR_DONE));
     HAL_Delay(50);
+    return true;
 }

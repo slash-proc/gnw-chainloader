@@ -36,21 +36,56 @@ void crash_log_capture(uint32_t *frame)
 }
 
 /*
- * Strong override of the weak HardFault_Handler alias in startup.s. Selects the
- * stack the exception frame was pushed onto (MSP vs PSP) and tail-calls the
- * C capture routine with it.
+ * Strong overrides of the weak fault-handler aliases in startup.s. Each selects the
+ * stack the exception frame was pushed onto (MSP vs PSP) and tail-calls the C capture
+ * routine. crash_log_init() enables the configurable faults so a MemManage/Bus/Usage
+ * fault is taken by its own precise handler instead of escalating to HardFault (CFSR
+ * identifies the cause either way).
  */
-__attribute__((naked, used))
-void HardFault_Handler(void)
+#define FAULT_HANDLER(name)                          \
+    __attribute__((naked, used)) void name(void) {   \
+        __asm volatile(                              \
+            "tst   lr, #4            \n"             \
+            "ite   eq                \n"             \
+            "mrseq r0, msp           \n"             \
+            "mrsne r0, psp           \n"             \
+            "b     crash_log_capture \n");           \
+    }
+FAULT_HANDLER(HardFault_Handler)
+FAULT_HANDLER(MemManage_Handler)
+FAULT_HANDLER(BusFault_Handler)
+FAULT_HANDLER(UsageFault_Handler)
+
+/* Enable precise capture of the configurable faults. Call once at boot. */
+void crash_log_init(void)
 {
-    __asm volatile(
-        "tst   lr, #4            \n"   /* EXC_RETURN[2]: 0 = MSP, 1 = PSP */
-        "ite   eq                \n"
-        "mrseq r0, msp           \n"
-        "mrsne r0, psp           \n"
-        "b     crash_log_capture \n"
-    );
+    SCB->SHCSR |= SCB_SHCSR_MEMFAULTENA_Msk | SCB_SHCSR_BUSFAULTENA_Msk | SCB_SHCSR_USGFAULTENA_Msk;
 }
+
+/* --- Surfacing: show a recorded crash to the user once at boot ----------------------
+ * The D3 record survives a warm reset, so a crash that reset (rather than froze) shows
+ * a one-line summary on the next boot. crash_log.py still reads the full record over SWD. */
+int crash_log_pending(void) { return CRASH_LOG->magic == CRASH_LOG_MAGIC; }
+
+static char *crash_hex8(char *p, uint32_t v)
+{
+    static const char H[] = "0123456789ABCDEF";
+    *p++ = '0'; *p++ = 'x';
+    for (int i = 28; i >= 0; i -= 4) *p++ = H[(v >> i) & 0xFu];
+    return p;
+}
+void crash_log_summary(char *buf, int n)
+{
+    if (n < 40) { if (n > 0) buf[0] = '\0'; return; }
+    char *p = buf;
+    const char *a = "Crash PC ", *b = " CFSR ";
+    while (*a) *p++ = *a++;
+    p = crash_hex8(p, CRASH_LOG->pc);
+    while (*b) *p++ = *b++;
+    p = crash_hex8(p, CRASH_LOG->cfsr);
+    *p = '\0';
+}
+void crash_log_ack(void) { CRASH_LOG->magic = 0u; }
 
 #ifdef CRASH_TEST
 /* A free DTCM cell the host pokes to request a deliberate fault. */

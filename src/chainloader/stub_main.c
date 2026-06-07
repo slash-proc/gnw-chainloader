@@ -31,6 +31,32 @@ ISzAlloc stub_lzma_allocator = { stub_lzma_alloc, stub_lzma_free };
 __attribute__((section(".stub_services"), used))
 const stub_services_t g_stub_services = { STUB_SERVICES_MAGIC, LzmaDecode };
 
+/* Inverse of xz's --armthumb BCJ pre-filter (LZMA SDK ARMT_Convert, decode, now_pos=0).
+ * The app image is run through the ARMTHUMB filter before LZMA at build time so Thumb
+ * BL/BLX branch targets become absolute and compress as repetition (~1.8 KB smaller);
+ * here we undo it in place over the freshly-decoded image, before the cache flush + jump.
+ * MUST stay in lock-step with the Makefile xz call (--armthumb). now_pos = 0 because the
+ * whole image is decoded as one buffer starting at stream offset 0. */
+static void armthumb_unfilter(uint8_t *data, size_t size) {
+    if (size < 4) return;
+    size_t lim = size - 4;
+    for (size_t i = 0; i <= lim; i += 2) {
+        if ((data[i + 1] & 0xF8) == 0xF0 && (data[i + 3] & 0xF8) == 0xF8) {
+            uint32_t src = (((uint32_t)data[i + 1] & 7) << 19)
+                         | ((uint32_t)data[i + 0] << 11)
+                         | (((uint32_t)data[i + 3] & 7) << 8)
+                         |  (uint32_t)data[i + 2];
+            src <<= 1;
+            uint32_t dest = (src - ((uint32_t)i + 4)) >> 1;   /* decode: subtract position */
+            data[i + 1] = (uint8_t)(0xF0 | ((dest >> 19) & 7));
+            data[i + 0] = (uint8_t)(dest >> 11);
+            data[i + 3] = (uint8_t)(0xF8 | ((dest >> 8) & 7));
+            data[i + 2] = (uint8_t)dest;
+            i += 2;
+        }
+    }
+}
+
 int main(void) {
     /* 1. Hardware setup needed for logic (Clocks, GPIO, RTC, OSPI) */
     board_early_init();
@@ -65,9 +91,12 @@ int main(void) {
     ELzmaStatus status;
 
 
-    if (LzmaDecode((uint8_t*)APP_RAM_BASE, &outSize, _binary_build_app_bin_lzma_start, 
-                   &inSize, (const uint8_t[]){0x5D, 0x00, 0x00, 0x02, 0x00}, 5, LZMA_FINISH_ANY, &status, &stub_lzma_allocator) == SZ_OK) {
-        
+    if (LzmaDecode((uint8_t*)APP_RAM_BASE, &outSize, _binary_build_app_bin_lzma_start,
+                   &inSize, (const uint8_t[]){0x37, 0x00, 0x00, 0x02, 0x00}, 5, LZMA_FINISH_ANY, &status, &stub_lzma_allocator) == SZ_OK) {
+
+        /* Undo the ARMTHUMB BCJ pre-filter (applied by xz before LZMA) in place. */
+        armthumb_unfilter((uint8_t*)APP_RAM_BASE, outSize);
+
         /* 2.5. Flush caches to ensure LTDC and CPU see the same RAM content */
         SCB_CleanDCache();
         SCB_InvalidateICache();

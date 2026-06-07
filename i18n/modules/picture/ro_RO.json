@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Vizualizator",
+  "MS_LOADING": "Se încarcă...",
+  "MS_CANCEL": "Apăsați B pentru anulare",
+  "MS_ERR_OPEN": "Imaginea nu poate fi deschisă.",
+  "MS_ERR_DECODE": "Imagine neacceptată sau deteriorată.",
+  "MS_EMPTY": "Nicio imagine în acest folder.",
+  "MS_HELP_PICK": "Deschideți o imagine din browser.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Înap/Înai  GAME Zoom  {BTN_B} Ieșire  {BTN_A} Ecran"
+}

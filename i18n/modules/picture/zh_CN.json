@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "图片查看器",
+  "MS_LOADING": "加载中...",
+  "MS_CANCEL": "按 B 取消",
+  "MS_ERR_OPEN": "无法打开图片。",
+  "MS_ERR_DECODE": "不支持或损坏的图片。",
+  "MS_EMPTY": "此文件夹中没有图片。",
+  "MS_HELP_PICK": "从文件浏览器打开图片。",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} 上/下张  GAME 缩放  {BTN_B} 退出  {BTN_A} 全屏"
+}

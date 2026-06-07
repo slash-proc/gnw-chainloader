@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "画像ビューア",
+  "MS_LOADING": "読み込み中...",
+  "MS_CANCEL": "Bでキャンセル",
+  "MS_ERR_OPEN": "画像を開けません。",
+  "MS_ERR_DECODE": "未対応または壊れた画像です。",
+  "MS_EMPTY": "このフォルダーに画像はありません。",
+  "MS_HELP_PICK": "ファイルブラウザから画像を開きます。",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} 前/次  GAME ズーム  {BTN_B} 終了  {BTN_A} 全画面"
+}

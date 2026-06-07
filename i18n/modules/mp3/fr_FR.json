@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "Lecteur MP3",
+  "MS_PLAYLIST": "Liste de lecture",
+  "MS_PREV": "Préc.",
+  "MS_SEEK": "Avance",
+  "MS_PLAY": "Lire",
+  "MS_PAUSE": "Pause",
+  "MS_NEXT": "Suiv.",
+  "MS_LIST": "Liste",
+  "MS_ADD": "Ajouter",
+  "MS_REMOVE": "Retirer",
+  "MS_EMPTY": "Liste de lecture vide.",
+  "MS_HELP_ADD": "Ouvrez la liste, puis ajoutez des titres.",
+  "MS_STOPPED": "Arrêté.",
+  "MS_HELP_PLAY": "Appuyez sur Lire ou ouvrez la liste.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Avance  {BTN_B} Annuler  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Choisir  {BTN_B} Quitter  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Titre  {BTN_LEFTRIGHT} Action  {BTN_B} Fermer  {BTN_A} Choisir"
+}

@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "圖片檢視器",
+  "MS_LOADING": "載入中...",
+  "MS_CANCEL": "按 B 取消",
+  "MS_ERR_OPEN": "無法開啟圖片。",
+  "MS_ERR_DECODE": "不支援或損毀的圖片。",
+  "MS_EMPTY": "此資料夾中沒有圖片。",
+  "MS_HELP_PICK": "從檔案瀏覽器開啟圖片。",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} 上/下張  GAME 縮放  {BTN_B} 退出  {BTN_A} 全螢幕"
+}

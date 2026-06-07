@@ -3,12 +3,14 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "ui/strings.h"   /* string_id_t for the translatable detail label */
 
 typedef struct {
     uint32_t address;
     uint32_t size;
-    const char* type;
-    char details[32];
+    const char* type;        /* stable English classification key (NOT translated in place) */
+    string_id_t detail_id;   /* translatable detail label, resolved at draw time via tr() */
+    uint32_t detail_num;     /* count for "%d" detail labels (Blocks/Entries); 0 otherwise */
 } partition_info_t;
 
 /*
@@ -68,8 +70,11 @@ void partition_erase(uint32_t addr, uint32_t size);
  * name: display name (e.g. "Mario OFW")
  * spi_offset: source offset in external flash
  * size: bytes to write (e.g. 128KB)
+ * Returns true once Bank 2 holds the verified OFW; false if verification of the
+ * source image/asset blob failed (Bank 2 left untouched) or a flash write failed.
+ * Callers MUST NOT boot Bank 2 on a false return.
  */
-void partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size);
+bool partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size);
 
 int partition_get_count(void);
 partition_info_t* partition_get_info(int index);
@@ -89,6 +94,6 @@ const char *partition_fs_code(const partition_info_t *p);
 const char *partition_driver_name(const partition_info_t *p);
 void update_progress_ui(int pct, const char *title, const char *status);
 extern uint32_t    total_ext_flash_size;
-extern const char *partition_current_phase;  /* updated during scan; display on progress screen */
+extern string_id_t partition_current_phase;  /* updated during scan; tr()'d on the progress screen */
 
 #endif // PARTITION_H

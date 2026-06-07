@@ -151,6 +151,46 @@ def wait_u32(dev, addr: int, test_fn, timeout: float = 90.0,
         time.sleep(interval)
 
 
+def probe_in_use() -> str | None:
+    """If another openocd / gnwmanager process is already running, return a short
+    description of it, else None. Only ONE process may own the single ST-Link at a
+    time (concurrent ones wedge it); use this to coexist with another session that
+    shares the programmer."""
+    try:
+        out = subprocess.run(["pgrep", "-af", r"openocd|gnwmanager"],
+                             capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    mypid = str(__import__("os").getpid())
+    for line in out.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2 or parts[0] == mypid:
+            continue
+        cmd = parts[1]
+        if "pgrep" in cmd:
+            continue
+        if "openocd" in cmd or "gnwmanager" in cmd:
+            return cmd[:80]
+    return None
+
+
+def wait_for_probe_free(timeout: float = 180.0, interval: float = 3.0) -> bool:
+    """Block until no other openocd/gnwmanager process is running, so a device
+    test doesn't contend for the ST-Link with a parallel session. Returns True if
+    the probe is free, False on timeout."""
+    deadline = time.time() + timeout
+    busy = probe_in_use()
+    if busy:
+        print(f"  [probe] waiting for the programmer (in use: {busy}) ...", flush=True)
+    while busy:
+        if time.time() >= deadline:
+            print(f"  [probe] still in use after {timeout:.0f}s; proceeding anyway", flush=True)
+            return False
+        time.sleep(interval)
+        busy = probe_in_use()
+    return True
+
+
 def recover_probe():
     """Reset-halt then resume via trace.py to restore a wedged probe link.
 
@@ -240,6 +280,26 @@ def wake(dev) -> None:
     import common.remote_input as ri
     dev.button_press([ri.BTN_SELECT])
     settle(0.2)
+
+
+def go_home(dev, max_b: int = 6) -> bool:
+    """Back out to the main menu via B until the page/modal stack is empty.
+
+    SWD-driven (reads g_stack_ptr, no OCR): a device left on a sub-page or in a
+    modal leaves g_list_main dormant, so DOWN moves the sub-list and a main-menu
+    test sees no movement. B on the main menu is a harmless no-op, so pressing it
+    a few extra times is safe. Returns True once the stack is empty.
+    """
+    import common.observe as observe
+    import common.remote_input as ri
+    wake(dev)
+    for _ in range(max_b):
+        depth = observe.modal_depth(dev.backend)
+        if depth == 0:
+            return True
+        dev.button_press([ri.BTN_B])
+        settle(0.25)
+    return observe.modal_depth(dev.backend) == 0
 
 
 def navigate_to(dev, target_index: int, num_items: int,

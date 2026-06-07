@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Visualizzatore",
+  "MS_LOADING": "Caricamento...",
+  "MS_CANCEL": "Premi B per annullare",
+  "MS_ERR_OPEN": "Impossibile aprire l'immagine.",
+  "MS_ERR_DECODE": "Immagine non supportata o danneggiata.",
+  "MS_EMPTY": "Nessuna immagine in questa cartella.",
+  "MS_HELP_PICK": "Apri un'immagine dal browser file.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Prec/Succ  GAME Zoom  {BTN_B} Esci  {BTN_A} Schermo"
+}

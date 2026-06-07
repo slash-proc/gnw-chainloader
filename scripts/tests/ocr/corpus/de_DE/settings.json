@@ -1,0 +1,12 @@
+{
+  "code": "de_DE",
+  "screen": "settings",
+  "theme": "DEFAULT",
+  "expect": [
+    "Einstellungen",
+    "Sprache",
+    "Design",
+    "Schnellstart"
+  ],
+  "fw_git": "9fa833a"
+}

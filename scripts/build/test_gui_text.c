@@ -14,6 +14,7 @@
 #include "ui/gui_font.h"
 #include "ui/strings.h"
 #include "ui/font_ext.h"
+#include "storage/vfs.h"      /* vfs_stream_t (paged font test) */
 
 /* Host stub for the device vfs: read a local file into dst so font_ext_open() can
  * load the real cooked blob during the test. */
@@ -24,6 +25,27 @@ int vfs_read_file(const char *path, void *dst, uint32_t max, uint32_t *out_size)
     fclose(f);
     *out_size = (uint32_t)n;
     return n > 0 ? 0 : -1;
+}
+/* font_ext reads fonts LFS-only now -> alias the same local-file stub. */
+int vfs_lfs_read(const char *path, void *dst, uint32_t max, uint32_t *out_size) {
+    return vfs_read_file(path, dst, max, out_size);
+}
+/* Streaming stubs for the PAGED font path: back a vfs_stream_t by a host FILE* (in ctx). */
+int vfs_open_stream(vfs_stream_t *s, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    s->drv = NULL; s->ctx = f;
+    return 0;
+}
+int vfs_stream_read(vfs_stream_t *s, void *buf, uint32_t n) {
+    return (s && s->ctx) ? (int)fread(buf, 1, n, (FILE *)s->ctx) : -1;
+}
+int vfs_stream_seek(vfs_stream_t *s, uint32_t off) {
+    return (s && s->ctx) ? fseek((FILE *)s->ctx, (long)off, SEEK_SET) : -1;
+}
+void vfs_stream_close(vfs_stream_t *s) {
+    if (s && s->ctx) fclose((FILE *)s->ctx);
+    if (s) { s->drv = NULL; s->ctx = NULL; }
 }
 
 static int g_fail = 0;
@@ -49,6 +71,37 @@ static void test_utf8(void) {
     check(dec1("\xF0\x9F\x98\x80", &adv) == 0x1F600 && adv == 4, "utf8: 4-byte emoji");
     check(dec1("\xFF", &adv) == 0xFFFD && adv == 1, "utf8: stray byte -> U+FFFD, +1");
     check(dec1("\xC3\x41", &adv) == 0xFFFD && adv == 1, "utf8: truncated -> U+FFFD, +1");
+}
+
+/* Decode the first DISPLAY token of `s` via gui_text_next; report bytes consumed. */
+static uint32_t tnext(const char *s, int *adv) {
+    const uint8_t *p = (const uint8_t *)s;
+    uint32_t cp = gui_text_next(&p);
+    if (adv) *adv = (int)(p - (const uint8_t *)s);
+    return cp;
+}
+
+static void test_shortcode(void) {
+    int adv;
+    check(tnext("{BTN_A}", &adv) == 0xE050 && adv == 7, "shortcode: {BTN_A} -> U+E050, consumes 7");
+    check(tnext("{MAC}x", &adv) == 0xF8FF && adv == 5, "shortcode: {MAC} -> U+F8FF, consumes 5");
+    check(tnext("{asdf}", &adv) == '{' && adv == 1, "shortcode: unknown {asdf} -> literal '{'");
+    check(tnext("{}", &adv) == '{' && adv == 1, "shortcode: empty {} -> literal '{'");
+    check(tnext("{BTN_A", &adv) == '{' && adv == 1, "shortcode: unterminated -> literal '{'");
+    check(tnext("A", &adv) == 'A' && adv == 1, "shortcode: plain ASCII passes through");
+    /* A whole '{asdf}' renders as its 6 literal characters (no codepoint, never '?'). */
+    check(gui_text_width("{asdf}") == gui_text_width("\x7B" "asdf}"), "shortcode: unknown token = literal chars");
+    /* A known token counts as exactly ONE glyph advance, not its 7 source bytes. */
+    gui_set_ext_glyph(font_ext_glyph);
+    if (font_ext_open("build/i18n/fonts/latin.fnt")) {
+        gui_glyph_info_t ba;
+        check(font_ext_glyph(0xE050, &ba), "shortcode: BTN_A glyph baked into latin.fnt");
+        check(gui_text_width("{BTN_A}") == ba.w, "shortcode: width of {BTN_A} = one glyph advance");
+        font_ext_close();
+    } else {
+        printf("SKIP shortcode width: latin.fnt absent (run `make i18n`)\n");
+    }
+    gui_set_ext_glyph(NULL);
 }
 
 static void test_glyph(void) {
@@ -192,8 +245,43 @@ static void test_font_ext(void) {
     gui_set_ext_glyph(NULL);   /* unwire the seam, leaving global state clean */
 }
 
+/* The PAGED reader: a COMPLETE CJK font is far too big for the slot buffer, so font_ext
+ * streams it from LFS glyph-by-glyph (binary-search codepoints[] by seek+read, bitmap on
+ * demand, LRU-cached). Exercises that whole path on the real cooked ja.fnt. SKIP if the
+ * blob is absent (a build artifact). */
+static void test_paged_font(void) {
+    gui_set_ext_glyph(font_ext_glyph);
+    gui_glyph_info_t q;
+    gui_glyph('?', &q);
+
+    if (!font_ext_open("build/i18n/fonts/ja.fnt")) {
+        printf("SKIP paged_font: build/i18n/fonts/ja.fnt absent (run `make i18n`)\n");
+        gui_set_ext_glyph(NULL);
+        return;
+    }
+    check(1, "paged: opened the complete ja.fnt (too big for RAM -> streamed)");
+
+    gui_glyph_info_t g, g2;
+    /* U+3042 HIRAGANA A -- resolved by paging, not whole-load. */
+    gui_glyph(0x3042, &g);
+    check(g.rows != q.rows && g.w >= 1 && g.h >= 10, "paged: U+3042 hiragana pages in");
+    /* U+65E5 'day' -- deep in CJK Unified; exercises the seek-based binary search. */
+    gui_glyph(0x65E5, &g);
+    check(g.rows != q.rows && g.w >= 1, "paged: U+65E5 kanji pages in via binary search");
+    /* Repeat -> LRU cache hit (same backing bytes). */
+    gui_glyph(0x65E5, &g2);
+    check(g2.rows == g.rows && g2.w == g.w, "paged: repeat lookup hits the LRU cache");
+    /* A codepoint the font lacks -> '?'. */
+    gui_glyph(0x0001, &g);
+    check(g.rows == q.rows, "paged: unmapped codepoint -> '?'");
+
+    font_ext_close();
+    gui_set_ext_glyph(NULL);
+}
+
 int main(void) {
     test_utf8();
+    test_shortcode();
     test_glyph();
     test_width();
     test_font_table();
@@ -201,6 +289,7 @@ int main(void) {
     test_en_pack();
     test_rtl_mirror();
     test_font_ext();
+    test_paged_font();
     printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "ALL PASSED", g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;
 }

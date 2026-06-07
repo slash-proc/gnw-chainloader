@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "مشغل MP3",
+  "MS_PLAYLIST": "قائمة التشغيل",
+  "MS_PREV": "السابق",
+  "MS_SEEK": "تقديم",
+  "MS_PLAY": "تشغيل",
+  "MS_PAUSE": "إيقاف",
+  "MS_NEXT": "التالي",
+  "MS_LIST": "قائمة",
+  "MS_ADD": "إضافة",
+  "MS_REMOVE": "إزالة",
+  "MS_EMPTY": "قائمة التشغيل فارغة.",
+  "MS_HELP_ADD": "افتح القائمة وأضف أغاني.",
+  "MS_STOPPED": "متوقف.",
+  "MS_HELP_PLAY": "اضغط تشغيل أو افتح القائمة.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} تقديم  {BTN_B} إلغاء  {BTN_A} موافق",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} اختيار  {BTN_B} خروج  {BTN_A} موافق",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} أغنية  {BTN_LEFTRIGHT} إجراء  {BTN_B} إغلاق  {BTN_A} اختيار"
+}

@@ -2,6 +2,7 @@
 #define UTILS_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 void int_to_str(int val, char *buf);
 #ifdef ENABLE_EXTENDED_UTILS
@@ -14,6 +15,12 @@ void hex_to_str(uint32_t val, char *buf, int width);
  * fixed UI buffer and crash the device). Use these for any buffer fed by `tr()`/data. */
 void str_lcpy(char *dst, int cap, const char *src);
 void str_lcat(char *dst, int cap, const char *src);
+
+/* True if file extension `ext` (no leading dot) is in `list` -- a comma-separated set of
+ * lowercase extensions, e.g. ext_list_match("jpg,jpeg", "JPEG") -> true. Case-insensitive;
+ * a list with no comma is the single-extension common case. Lets a feature module's header
+ * declare several handled extensions in one field. */
+bool ext_list_match(const char *list, const char *ext);
 
 /* Single-placeholder template splicers (there is no printf), BOUNDED to `cap`. Copy
  * `tmpl` into `dst`, replacing the FIRST "%d" (resp. "%s") with the integer (resp.

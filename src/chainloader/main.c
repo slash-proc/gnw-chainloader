@@ -28,6 +28,7 @@ static void app_early_logic(void) {
         uint32_t spi_offset = hold_left ? MARIO_SPI_OFFSET : ZELDA_SPI_OFFSET;
 
         board_console_type_t target_console = hold_left ? CONSOLE_MARIO : CONSOLE_ZELDA;
+        bool ofw_ready = true;
         if (board_console_type != target_console) {
             /* Not the active OFW: flash it first. partition_flash_ofw draws a
                progress bar via gui_refresh(), which busy-waits on LTDC vertical
@@ -35,8 +36,13 @@ static void app_early_logic(void) {
                spins forever (black screen). gui_init() is idempotent. */
             board_init();
             gui_init();
-            partition_flash_ofw(target_name, spi_offset, 128 * 1024);
+            /* Refuses (and leaves Bank 2 untouched) if the backup/asset CRC check
+               fails. Don't jump to an unbootable Bank 2 — fall through to the
+               normal boot below so the launcher menu stays reachable. STABILITY
+               IS LAW: the menu must be reachable in every failure case. */
+            ofw_ready = partition_flash_ofw(target_name, spi_offset, 128 * 1024);
         }
+        if (ofw_ready) {
         /* God-mode jumps straight into the OFW, skipping the menu path's
            SRAM_MAGIC scrub (main, below) and input_init()'s remote-shadow clear.
            The bank-swap reset preserves DTCM, so reset-survivor junk in either
@@ -48,6 +54,7 @@ static void app_early_logic(void) {
         *(volatile uint32_t *)SRAM_MAGIC_ADDR = 0;
         *(volatile uint32_t *)SRAM_REMOTE_INPUT_ADDR = 0;
         board_jump_to_app(OFW_INTERNAL_BASE);
+        } /* if (ofw_ready) — else fall through to the menu */
     }
 
     /* 1.2. B Button: Direct Retro-Go Boot Shortcut */

@@ -1,0 +1,12 @@
+{
+  "code": "de_DE",
+  "screen": "main",
+  "theme": "DEFAULT",
+  "expect": [
+    "Starten",
+    "Werkzeuge",
+    "Einstellungen",
+    "Ausschalten"
+  ],
+  "fw_git": "9fa833a"
+}

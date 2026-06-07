@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Visor de imágenes",
+  "MS_LOADING": "Cargando...",
+  "MS_CANCEL": "Pulsa B para cancelar",
+  "MS_ERR_OPEN": "No se puede abrir la imagen.",
+  "MS_ERR_DECODE": "Imagen no compatible o dañada.",
+  "MS_EMPTY": "No hay imágenes en esta carpeta.",
+  "MS_HELP_PICK": "Abre una imagen desde el explorador.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Ant/Sig  GAME Zoom  {BTN_B} Salir  {BTN_A} Completa"
+}

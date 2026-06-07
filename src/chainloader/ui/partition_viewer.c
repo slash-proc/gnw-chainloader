@@ -7,6 +7,7 @@
 #include "assets.h"
 #include "ui_list.h"
 #include "strings.h"
+#include "system/ofw_verify.h"
 #include <string.h>
 
 typedef enum {
@@ -27,6 +28,13 @@ static struct {
     } virtual_items[24];
     int virtual_count;
 } g_part_view;
+
+/* Cached OFW/asset CRC-verification result for the currently highlighted row. The
+ * CRC sweep (up to ~3 MiB over memory-mapped flash) is far too heavy to run every
+ * frame, so it runs once when the selection lands on a recognized OFW backup or
+ * asset blob and is reused until the selection moves. Reset on viewer entry. */
+static int s_verify_idx = -1;
+static ofw_verify_status_t s_verify_status = OFW_VERIFY_NA;
 
 /* Partition grouping predicates: internal NOR (banks 1/2), external NOR (SD is
  * grouped separately), and the synthetic SD partition. */
@@ -106,6 +114,7 @@ static void execute_erase(void) {
         wdog_refresh();
     }
     g_part_view.mode = PART_MODE_LIST;
+    s_verify_idx = -1;   /* partition indices changed; invalidate the verify cache */
     rebuild_virtual_list();
     g_part_view.list.num_items = g_part_view.virtual_count;
     if (g_part_view.list.selected >= g_part_view.list.num_items) {
@@ -149,33 +158,38 @@ static void partition_draw_right_pane(int selected_idx, uint32_t selected_tick) 
     
     int p_idx = g_part_view.virtual_items[selected_idx].partition_idx;
     partition_info_t* p = partition_get_info(p_idx);
-    /* Detail column: x=198 in LTR; the whole 110px-wide column mirrors to the left in
-     * RTL (the list swaps to the right via ui_list_draw). Labels/values right-align in
-     * RTL but LTR runs (hex, sizes) still read left-to-right. */
-    const int pw = 110;
-    int px = gui_mirror_x(198, pw, 0, SCREEN_WIDTH);
-    gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_TARGET), COLOR_FG, false, 0);
 
-    const char* target_name = (strcmp(p->type, "FREE") == 0) ? tr(STR_FREE_SPACE) : p->type;
-    gui_draw_text_aligned(px, 55, pw, target_name, COLOR_FG, true, selected_tick);
+    /* type doubles as a classification key, so translate only the displayed form here
+     * (proper nouns Mario/Zelda/Retro-Go/FAT/LittleFS/FrogFS stay literal). */
+    const char* target_name = p->type;
+    if      (strcmp(p->type, "FREE") == 0)     target_name = tr(STR_FREE_SPACE);
+    else if (strcmp(p->type, "Firmware") == 0) target_name = tr(STR_TYPE_FIRMWARE);
+    ui_list_pane_row(0, tr(STR_LBL_TARGET), target_name, true, selected_tick);
 
-    gui_draw_text_aligned(px, 75, pw, tr(STR_LBL_SIZE), COLOR_FG, false, 0);
     char size_buf[16];
     if (partition_is_sd(p)) format_size_sectors(p->size, size_buf);  /* SD: size is sectors */
     else                    format_size(p->size, size_buf);
-    gui_draw_text_aligned(px, 90, pw, size_buf, COLOR_FG, false, 0);
+    ui_list_pane_row(1, tr(STR_LBL_SIZE), size_buf, false, 0);
 
-    gui_draw_text_aligned(px, 110, pw, tr(STR_LBL_ADDR), COLOR_FG, false, 0);
-    if (partition_is_sd(p)) {
-        gui_draw_text_aligned(px, 125, pw, "SD", COLOR_FG, false, 0);   /* sentinel addr is meaningless */
-    } else {
-        char addr_buf[16];
-        hex_to_str(p->address, addr_buf, 8);
-        gui_draw_text_aligned(px, 125, pw, addr_buf, COLOR_FG, false, 0);
+    char addr_buf[16];
+    hex_to_str(p->address, addr_buf, 8);   /* SD shows its sentinel (0xC0000000) for consistency */
+    ui_list_pane_row(2, tr(STR_LBL_ADDR), addr_buf, false, 0);
+
+    /* For a recognized OFW backup / asset blob, verify its baked CRC signature
+     * (cached per selection). A mismatch means it is not our patched build, so we
+     * label it UNKNOWN instead of "Assets"/"OFW Backup" -- the same image the boot
+     * path refuses to copy into Bank 2. */
+    if (s_verify_idx != p_idx) {
+        s_verify_idx = p_idx;
+        s_verify_status = ofw_verify_addr(p->address);
     }
 
-    gui_draw_text_aligned(px, 145, pw, tr(STR_LBL_DETAILS), COLOR_FG, false, 0);
-    gui_draw_text_aligned(px, 160, pw, p->details, COLOR_FG, true, selected_tick);
+    char detail_buf[40];
+    if (s_verify_status == OFW_VERIFY_BAD)
+        str_lcpy(detail_buf, sizeof(detail_buf), tr(STR_UNKNOWN));
+    else
+        str_fmt1_int(detail_buf, sizeof(detail_buf), tr(p->detail_id), (int)p->detail_num);
+    ui_list_pane_row(3, tr(STR_LBL_DETAILS), detail_buf, true, selected_tick);
 }
 
 /* Land the selection on the first non-divider row. */
@@ -195,13 +209,12 @@ static void menu_partition_enter(ui_window_t *self) {
         partition_redetect_sd();
     }
     g_part_view.mode = (partition_scan_get_state() == PARTITION_SCAN_IN_PROGRESS) ? PART_MODE_SCANNING : PART_MODE_LIST;
+    s_verify_idx = -1;   /* drop any cached verification from a prior session */
     rebuild_virtual_list();
     self->title = tr(STR_PARTITION_VIEWER);
     ui_list_init(&g_part_view.list, tr(STR_PARTITION_VIEWER), g_part_view.virtual_count, partition_get_label, partition_on_action);
-    g_part_view.list.is_split = true;
-    g_part_view.list.draw_right_pane = partition_draw_right_pane;
+    ui_list_set_split(&g_part_view.list, partition_draw_right_pane);
     g_part_view.list.on_back = ui_pop;
-    g_part_view.list.visible_lines = 9;
     select_first_item();
 }
 
@@ -227,13 +240,17 @@ static void menu_partition_draw(ui_window_t *self) {
         return;
     }
     ui_list_draw(&g_part_view.list, self->x, self->y, self->w, self->h);
+    /* Footer legend, mirroring the File Browser: A on a row opens its OPTIONS menu.
+     * Reuses the already-translated browser legend ("...   A: SEL") so the hint is
+     * localized in every language; only renders when show_footer is set (it is). */
+    ui_draw_footer(tr(STR_FOOTER_BROWSER));
 }
 
 ui_window_t PAGE_PARTITION = {
     .title = NULL,   /* set via tr() in menu_partition_enter */
     .x = 0, .y = 22, .w = 320, .h = 196,
     .is_modal = 0,
-    .show_footer = 0,
+    .show_footer = 1,
     .allow_idle_hide = 0,
     .enter = menu_partition_enter,
     .draw_content = menu_partition_draw,

@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3プレーヤー",
+  "MS_PLAYLIST": "プレイリスト",
+  "MS_PREV": "前へ",
+  "MS_SEEK": "シーク",
+  "MS_PLAY": "再生",
+  "MS_PAUSE": "一時停止",
+  "MS_NEXT": "次へ",
+  "MS_LIST": "リスト",
+  "MS_ADD": "追加",
+  "MS_REMOVE": "削除",
+  "MS_EMPTY": "プレイリストは空です。",
+  "MS_HELP_ADD": "プレイリストを開いて曲を追加。",
+  "MS_STOPPED": "停止中。",
+  "MS_HELP_PLAY": "再生を押すかプレイリストを開く。",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} シーク  {BTN_B} キャンセル  {BTN_A} 決定",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} 選択  {BTN_B} 終了  {BTN_A} 決定",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} 曲  {BTN_LEFTRIGHT} 操作  {BTN_B} 閉じる  {BTN_A} 選択"
+}

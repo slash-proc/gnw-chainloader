@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Afbeeldingen",
+  "MS_LOADING": "Laden...",
+  "MS_CANCEL": "Druk op B om te annuleren",
+  "MS_ERR_OPEN": "Kan afbeelding niet openen.",
+  "MS_ERR_DECODE": "Niet-ondersteunde of beschadigde afbeelding.",
+  "MS_EMPTY": "Geen afbeeldingen in deze map.",
+  "MS_HELP_PICK": "Open een afbeelding via de bestandsbrowser.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Vorig/Volg  GAME Zoom  {BTN_B} Sluiten  {BTN_A} Volledig"
+}

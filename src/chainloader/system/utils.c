@@ -72,6 +72,25 @@ void str_lcat(char *dst, int cap, const char *src) {
     dst[n] = '\0';
 }
 
+bool ext_list_match(const char *list, const char *ext) {
+    if (!list || !ext) return false;
+    while (*list) {                              /* walk each comma-separated token */
+        const char *a = list, *b = ext;
+        for (;;) {
+            char x = (*a == ',') ? '\0' : *a;    /* ',' (or end) terminates the token */
+            char y = *b;
+            if (x >= 'A' && x <= 'Z') x += 32;
+            if (y >= 'A' && y <= 'Z') y += 32;
+            if (x != y) break;                   /* token != ext: try the next token */
+            if (x == '\0') return true;          /* both ended together: a match */
+            a++; b++;
+        }
+        while (*list && *list != ',') list++;    /* skip the rest of this token */
+        if (*list == ',') list++;                /* and the comma */
+    }
+    return false;
+}
+
 void str_fmt1_int(char *dst, int cap, const char *tmpl, int n) {
     char num[16];
     int_to_str(n, num);

@@ -40,6 +40,10 @@ FONT_DIR = REPO / "build" / "i18n" / "fonts"
 GUI_FONT_REF_TOP = 1            # ui/gui_font.h
 FNT_MAGIC = 0x31544E46          # 'FNT1'
 
+# Script-specific glyph-set bounds for the line reader (keep read_rows fast).
+CPS_LATIN = [(0x20, 0x5FF)]                       # ASCII + Latin-1 + Greek + Cyrillic
+CPS_ARABIC = [(0x20, 0x7F), (0xFB50, 0xFEFF)]     # ASCII + Arabic presentation forms
+
 
 class Font:
     _cache = None
@@ -52,8 +56,17 @@ class Font:
         if cls._cache is None:
             f = cls()
             f._load_ascii(ASCII_C)
-            for p in sorted(FONT_DIR.glob("*.fnt")):
+            fnts = sorted(FONT_DIR.glob("*.fnt"))
+            for p in fnts:
                 f._load_fnt(p)
+            if not fnts:
+                # The single most common cause of "OCR isn't working": a clean
+                # build wiped build/i18n/fonts, so only ASCII glyphs are present
+                # and every non-Latin label resolves to '?'. Make it loud rather
+                # than silently degrading.
+                print("[ocr] WARNING: no build/i18n/fonts/*.fnt loaded — OCR is "
+                      "ASCII-only (non-Latin will fail). `make clean` wipes these; "
+                      "run `make i18n` or call ocr.ensure_fonts().", file=sys.stderr)
             cls._cache = f
         return cls._cache
 
@@ -93,6 +106,35 @@ class Font:
 
     def glyph(self, cp):
         return self.glyphs.get(cp) or self.glyphs.get(ord("?"))
+
+
+def fonts_available() -> bool:
+    """True if the per-language .fnt blobs are on disk (non-Latin OCR needs them)."""
+    return FONT_DIR.is_dir() and any(FONT_DIR.glob("*.fnt"))
+
+
+def ensure_fonts(build: bool = True) -> bool:
+    """Guarantee the script fonts OCR needs are present, regenerating them once if
+    not. They live under build/i18n/fonts and are wiped by `make clean`, so a
+    fresh build session has ASCII-only OCR until `make i18n` runs. Callers gate
+    optional OCR assertions on this:  `if ocr.ensure_fonts(): ...`.
+
+    Returns True if the fonts are available afterward. Never raises.
+    """
+    if fonts_available():
+        return True
+    if build:
+        import subprocess
+        print("[ocr] build/i18n/fonts/*.fnt absent (a clean build wipes them); "
+              "running `make i18n` to regenerate ...", file=sys.stderr)
+        try:
+            subprocess.run(["make", "i18n"], cwd=REPO, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
+                           timeout=600)
+        except Exception as e:                              # noqa: BLE001
+            print(f"[ocr] `make i18n` failed: {e}", file=sys.stderr)
+        Font._cache = None       # force a reload so the new glyphs are picked up
+    return fonts_available()
 
 
 def render_text(font: Font, s: str):
@@ -168,17 +210,48 @@ def binarize(frame_rgb, fg, tol=72):
     return d < tol
 
 
+def row_match(text: str, needle: str) -> bool:
+    """Ultra-simple anchored match of `needle` against one row's read `text`:
+        ^X    text starts with X        X$    text ends with X
+        ^X$   text equals X             X     X anywhere (plain substring)
+    Case-insensitive; surrounding row whitespace is ignored. Anchors stop a longer
+    row from false-matching a plain search -- e.g. '^Settings$' will NOT match a
+    'Demo Setting' row, and per-row exact matching cleanly separates same-family
+    languages whose labels share substrings (a Polish screen no longer matches a
+    German label)."""
+    t = text.casefold().strip()
+    start, end = needle.startswith("^"), needle.endswith("$")
+    pat = needle[1:] if start else needle
+    pat = (pat[:-1] if end else pat).casefold().strip()
+    if start and end:
+        return t == pat
+    if start:
+        return t.startswith(pat)
+    if end:
+        return t.endswith(pat)
+    return pat in t
+
+
 class Screen:
     """An OCR view of one captured frame: detects the FG colour + ink mask once,
     then answers locate / read / selected-row queries against it."""
 
-    def __init__(self, frame_rgb, font=None, fg=None):
+    def __init__(self, frame_rgb, font=None, fg=None, max_cp=None, cp_ranges=None):
         self.frame = frame_rgb
         self.font = font or Font.load()
         self.fg = fg if fg is not None else detect_fg(frame_rgb, self.font)
         self.ink = binarize(frame_rgb, self.fg) if self.fg is not None else None
+        # Restrict the glyph set the line reader (_best_glyph/read_rows) considers.
+        # Blind reading over the full 31k-glyph CJK set is minutes-slow, so for a
+        # script-specific frame pass a bound: max_cp=0x600 keeps the Latin family
+        # (Latin/Greek/Cyrillic), or cp_ranges=CPS_ARABIC keeps ASCII + the Arabic
+        # presentation forms (the device draws pre-shaped Arabic from those).
         self._by_w = {}
         for cp, (w, h, yoff, m) in self.font.glyphs.items():
+            if max_cp is not None and cp > max_cp:
+                continue
+            if cp_ranges is not None and not any(lo <= cp <= hi for lo, hi in cp_ranges):
+                continue
             self._by_w.setdefault(w, []).append((cp, yoff, m))
         self._widths = sorted(self._by_w, reverse=True)
 
@@ -214,8 +287,92 @@ class Screen:
                     best = (sc, x, y)
         return (best[1], best[2], best[0]) if best[0] >= thresh else None
 
+    def locate_seq(self, s, y_hint=None, thresh=0.62, drift=2):
+        """Sequential per-glyph matcher for a KNOWN string `s`.
+
+        The rigid whole-word `locate` is weak on dense real device frames: long
+        words drift out of alignment (advance-width mismatch) and common-letter
+        strings find lucky partial matches, so a wrong string can outscore the
+        right one. This places each glyph at its expected position but allows a
+        small per-glyph drift, FOLLOWING the device's actual layout, and scores
+        the mean per-glyph fit. A wrong string's glyphs won't all land on ink, so
+        it separates correct from incorrect far better. Returns (x, y, score) or
+        None. Use it via `find()`/`has()`.
+        """
+        if self.ink is None:
+            return None
+        cells = []
+        for ch in s:
+            g = self.font.glyph(ord(ch))
+            if g is None:
+                return None
+            cells.append((ch, *g))          # (ch, w, h, yoff, mask)
+        anchor = self.locate(s, y_hint=y_hint, thresh=0.0)   # coarse position
+        if anchor is None:
+            return None
+        x0, y0, _ = anchor
+        top = min(yoff for _, _, _, yoff, _ in cells)
+        x, fits = x0, []
+        for ch, w, h, yoff, m in cells:
+            if m.sum() == 0:                # space / blank: advance, don't score
+                x += w
+                continue
+            gy = y0 + (yoff - top)
+            best, bestdx = -1.0, 0
+            for dx in range(-drift, drift + 1):
+                for dy in (-1, 0, 1):
+                    sc = self._fit(m, x + dx, gy + dy)
+                    if sc > best:
+                        best, bestdx = sc, dx
+            fits.append(best)
+            x += w + bestdx                 # follow the drift
+        if not fits:
+            return None
+        score = sum(fits) / len(fits)
+        return (x0, y0, score) if score >= thresh else None
+
+    def find(self, s, y_hint=None, thresh=0.62, drift=2):
+        """Robust known-string matcher (sequential per-glyph). Preferred over
+        `locate` for asserting expected strings on real device frames."""
+        return self.locate_seq(s, y_hint=y_hint, thresh=thresh, drift=drift)
+
     def has(self, s, **kw):
+        # Kept as the rigid whole-word match for backward compatibility with the
+        # existing ocrnav consumers. For robust assertions on dense real device
+        # frames prefer contains() (read + substring) or find() (sequential).
         return self.locate(s, **kw) is not None
+
+    def contains(self, needle: str) -> bool:
+        """True if `needle` matches some read row (see row_match for the anchors).
+
+        The most discriminative matcher on dense real frames: it reads each row by
+        following the device's own glyph layout (read_rows) and matches, so a
+        not-on-screen word is simply not present (unlike template matching, where
+        common letters find lucky partial hits). read_rows is slow over the full
+        31k-glyph CJK set, so build the Screen with a restricted glyph set for speed
+        (e.g. `Screen(frame, max_cp=0x600)` for a Latin/Greek/Cyrillic frame)."""
+        if self.ink is None:
+            return False
+        if not hasattr(self, "_rows_cache"):
+            self._rows_cache = self.read_rows()
+        return any(row_match(t, needle) for _, t in self._rows_cache)
+
+    def find_row(self, needle):
+        """y (band top) of the row whose READ text matches `needle`, or None. The
+        discriminative way to locate a menu row. Build the Screen with a glyph set
+        restricted to the needle's codepoints (+ASCII) so read_rows is fast.
+
+        `needle` supports ultra-simple anchors (row_match): use `^Settings$` to
+        match ONLY a row that reads exactly "Settings", so a longer row like
+        "Demo Setting" can't false-match a plain "Settings" search."""
+        if self.ink is None:
+            return None
+        if not hasattr(self, "_rows_cache"):
+            self._rows_cache = self.read_rows()
+        for y0, text in self._rows_cache:
+            if row_match(text, needle):
+                return y0
+        return None
 
     def selected_row(self, left_col=170):
         """y of the cursor row. The selected list item carries a theme sprite (a

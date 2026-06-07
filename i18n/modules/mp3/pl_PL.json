@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "Odtwarzacz MP3",
+  "MS_PLAYLIST": "Playlista",
+  "MS_PREV": "Poprz.",
+  "MS_SEEK": "Przewiń",
+  "MS_PLAY": "Odtwórz",
+  "MS_PAUSE": "Pauza",
+  "MS_NEXT": "Nast.",
+  "MS_LIST": "Lista",
+  "MS_ADD": "Dodaj",
+  "MS_REMOVE": "Usuń",
+  "MS_EMPTY": "Playlista jest pusta.",
+  "MS_HELP_ADD": "Otwórz playlistę i dodaj utwory.",
+  "MS_STOPPED": "Zatrzymano.",
+  "MS_HELP_PLAY": "Naciśnij Odtwórz lub otwórz playlistę.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Przewiń  {BTN_B} Anuluj  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Wybierz  {BTN_B} Wyjdź  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Utwór  {BTN_LEFTRIGHT} Akcja  {BTN_B} Zamknij  {BTN_A} Wybierz"
+}

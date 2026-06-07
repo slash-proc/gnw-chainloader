@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3-програвач",
+  "MS_PLAYLIST": "Плейлист",
+  "MS_PREV": "Назад",
+  "MS_SEEK": "Перемотка",
+  "MS_PLAY": "Пуск",
+  "MS_PAUSE": "Пауза",
+  "MS_NEXT": "Вперед",
+  "MS_LIST": "Список",
+  "MS_ADD": "Додати",
+  "MS_REMOVE": "Вилучити",
+  "MS_EMPTY": "Плейлист порожній.",
+  "MS_HELP_ADD": "Відкрийте плейлист і додайте треки.",
+  "MS_STOPPED": "Зупинено.",
+  "MS_HELP_PLAY": "Натисніть Пуск або відкрийте плейлист.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Перемотка  {BTN_B} Скасувати  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Вибрати  {BTN_B} Вихід  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Трек  {BTN_LEFTRIGHT} Дія  {BTN_B} Закрити  {BTN_A} Вибрати"
+}

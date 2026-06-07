@@ -1,0 +1,9 @@
+{
+  "code": "de_DE",
+  "screen": "tools",
+  "theme": "DEFAULT",
+  "expect": [
+    "Werkzeuge"
+  ],
+  "fw_git": "9fa833a"
+}

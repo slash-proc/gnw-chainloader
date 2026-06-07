@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "Player MP3",
+  "MS_PLAYLIST": "Listă redare",
+  "MS_PREV": "Ant.",
+  "MS_SEEK": "Derulare",
+  "MS_PLAY": "Redare",
+  "MS_PAUSE": "Pauză",
+  "MS_NEXT": "Urm.",
+  "MS_LIST": "Listă",
+  "MS_ADD": "Adaugă",
+  "MS_REMOVE": "Elimină",
+  "MS_EMPTY": "Lista este goală.",
+  "MS_HELP_ADD": "Deschide lista și adaugă melodii.",
+  "MS_STOPPED": "Oprit.",
+  "MS_HELP_PLAY": "Apasă Redare sau deschide lista.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Derulare  {BTN_B} Anulează  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Alege  {BTN_B} Ieșire  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Melodie  {BTN_LEFTRIGHT} Acțiune  {BTN_B} Închide  {BTN_A} Alege"
+}

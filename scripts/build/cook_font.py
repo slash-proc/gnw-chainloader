@@ -39,8 +39,45 @@ LATIN_COVERAGE = (list(range(0xA1, 0x180)) +       # Latin-1 Supplement + Extend
                   list(range(0x0400, 0x0500)) +    # Cyrillic
                   [0x2013, 0x2014, 0x2018, 0x2019, 0x201C, 0x201D, 0x2026])
 
+# COMPLETE coverage for the CJK script blobs, per script: every codepoint the OTF carries in
+# these blocks, so an arbitrary CJK FILENAME renders (not just the UI subset). The paged
+# font_ext reader streams these from LittleFS glyph-by-glyph, so the on-flash size is not
+# RAM-bound. Only the blocks each script actually needs are included (no Hangul in the
+# Japanese font, etc.); the cmap intersection in cmd_blob drops anything the OTF lacks.
+_CJK_PUNCT = (list(range(0x3000, 0x3040)) +    # CJK symbols + punctuation
+              list(range(0xF900, 0xFB00)) +    # CJK compatibility ideographs
+              list(range(0xFF00, 0xFFF0)))     # fullwidth + halfwidth forms
+_CJK_HAN   = list(range(0x4E00, 0xA000))       # CJK Unified Ideographs (main block)
+_KANA      = list(range(0x3040, 0x3100)) + list(range(0x31F0, 0x3200))   # Hiragana/Katakana (+ ext)
+_BOPOMOFO  = list(range(0x3100, 0x3130))
+_HANGUL    = list(range(0xAC00, 0xD7A4)) + list(range(0x3130, 0x3190))   # syllables + compat jamo
+CJK_COVERAGE = {
+    "ja":      _CJK_PUNCT + _KANA + _CJK_HAN,
+    "zh_hans": _CJK_PUNCT + _BOPOMOFO + _CJK_HAN,
+    "zh_hant": _CJK_PUNCT + _BOPOMOFO + _CJK_HAN,
+    "ko":      _CJK_PUNCT + _HANGUL + _CJK_HAN,
+}
+
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 FONT_DIR = os.path.join(REPO, "i18n", "fonts")
+
+
+def selected_symbol_cps():
+    """Codepoints curated in i18n/glyphs_selected.txt — the controller/logo icons that
+    get baked into latin.fnt so the {TOKEN} text replacer (gui_text.c) can render them
+    under any active language. Empty if the file is absent."""
+    path = os.path.join(REPO, "i18n", "glyphs_selected.txt")
+    out = set()
+    if os.path.exists(path):
+        for ln in open(path, encoding="utf-8"):
+            ln = ln.split("#", 1)[0].strip()
+            if not ln:
+                continue
+            try:
+                out.add(int(ln.replace("U+", "").split()[0], 16))
+            except (ValueError, IndexError):
+                pass
+    return out
 
 # Font variant to cook from, set per-invocation via --style. The leading integer
 # is the native pixel size (the ppem to rasterize at). e.g. "12px-monospaced"
@@ -292,6 +329,10 @@ def cmd_blob(args):
             cps = sorted({ord(c) for c in f.read() if ord(c) >= 0x80})
     else:
         cps = LATIN_COVERAGE
+    if args.script == "latin":
+        cps = sorted(set(cps) | selected_symbol_cps())
+    if args.script in CJK_COVERAGE:       # complete CJK coverage for filenames (paged on device)
+        cps = sorted(set(cps) | set(CJK_COVERAGE[args.script]))
     cps = [c for c in cps if c in cmap]   # only codepoints the OTF actually has
 
     glyphs = []

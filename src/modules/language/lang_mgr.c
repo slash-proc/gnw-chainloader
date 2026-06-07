@@ -100,8 +100,8 @@ bool i18n_set(uint8_t idx) {
     char lp[64], fp[64];
     lang_paths(e, lp, fp);
     uint32_t sz = 0;
-    bool ok = (vfs_read_lang_lfs(lp, g_lang_buf, sizeof(g_lang_buf), &sz, STRINGS_ABI_VERSION) == 0 &&
-               lang_parse(g_lang_buf, sz));
+    bool ok = (vfs_lfs_read(lp, g_lang_buf, sizeof(g_lang_buf), &sz) == 0 &&
+               lang_parse(g_lang_buf, sz));   /* lang_parse validates magic/ABI/count */
     if (ok) {
         /* A language with no usable font would render as '?' everywhere — don't
          * load it; fall back to clean English. Latin scripts ride the always-on
@@ -173,10 +173,34 @@ static bool english_pack_present(void) {
     return false;
 }
 
-/* (Re)build the runtime list: English + every valid pack on LittleFS, by code. */
+/* Discovery scratch: collect .lang basenames during the dir enum (its callback must
+ * NOT touch the FS -- the core holds the LFS mount across the enum), then read + parse
+ * each header afterwards (one mount per read, no re-entrancy). */
+static char g_disc[I18N_MAX][24];
+static int  g_disc_n;
+static void disc_name_cb(const char *name) {
+    int L = 0; while (name[L]) L++;
+    if (L <= 5 || L >= (int)sizeof(g_disc[0])) return;
+    if (strcmp(name + L - 5, ".lang") != 0) return;       /* only *.lang */
+    if (g_disc_n < I18N_MAX) strcpy(g_disc[g_disc_n++], name);
+}
+
+/* (Re)build the runtime list: English + every valid pack on LittleFS, by code. The
+ * .lang format (magic/ABI/header offsets) is owned HERE in the module, not the core:
+ * read each pack's 76-byte header and take its self-described code/endonym/script. */
 static void discover_into_list(void) {
     set_english_entry();
-    vfs_lfs_enum_langs(STRINGS_ABI_VERSION, discover_cb);
+    g_disc_n = 0;
+    vfs_lfs_enum_dir("/i18n", disc_name_cb);
+    for (int i = 0; i < g_disc_n; i++) {
+        char path[40];
+        strcpy(path, "/i18n/"); strcat(path, g_disc[i]);
+        uint8_t hdr[LANG_HDR_SIZE]; uint32_t got = 0;
+        if (vfs_lfs_read(path, hdr, sizeof(hdr), &got) != 0 || got < LANG_HDR_SIZE) continue;
+        if (rd32(hdr) != LANG_MAGIC || rd16(hdr + 4) != STRINGS_ABI_VERSION) continue;
+        /* header layout: script[16]@12, code[16]@28, endonym[32]@44 */
+        discover_cb((const char *)(hdr + 28), (const char *)(hdr + 44), (const char *)(hdr + 12));
+    }
     sort_by_code();
 }
 

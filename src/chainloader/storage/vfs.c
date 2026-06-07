@@ -15,7 +15,15 @@ static vfs_driver_t *g_drivers[8];
 static int g_driver_count = 0;
 static host_api_t g_host_api;
 
+/* A module flash address may be a flash OFFSET (the documented host-API convention) or an absolute
+ * memory-mapped address (the loaded FAT driver hands us the partition's absolute base). Normalize
+ * to an offset so the 0x90000000 base is never double-added (which faulted at 0x20540000). */
+static inline uint32_t flash_norm_off(uint32_t addr) {
+    return (addr >= 0x90000000UL) ? (addr - 0x90000000UL) : addr;
+}
+
 static int host_flash_read(uint32_t addr, void *buf, size_t size) {
+    addr = flash_norm_off(addr);
     memcpy(buf, (const void *)(0x90000000UL + addr), size);
     return 0;
 }
@@ -41,6 +49,7 @@ static inline void dcache_after_write(uint32_t addr, uint32_t size) {
 }
 
 static int host_flash_write(uint32_t addr, const void *buf, size_t size) {
+    addr = flash_norm_off(addr);
     uint32_t mem_addr = 0x90000000UL + addr;
     dcache_before_write(mem_addr, size);
 
@@ -53,6 +62,7 @@ static int host_flash_write(uint32_t addr, const void *buf, size_t size) {
 }
 
 static int host_flash_erase(uint32_t addr, uint32_t size) {
+    addr = flash_norm_off(addr);
     uint32_t mem_addr = 0x90000000UL + addr;
     dcache_before_write(mem_addr, size);
 
@@ -172,7 +182,10 @@ int vfs_copy_open_file(vfs_driver_t *src, const char *sp,
         return VFS_COPY_OPEN;
     void *fs = NULL, *fd = NULL;
     if (src->open(sp, 1 /* read */, &fs) != 0) return VFS_COPY_OPEN;
-    if (dst->open(dp, 2 /* write/create */, &fd) != 0) {
+    /* A sized copy to a driver that offers it lands CONTIGUOUS (f_expand) for XIP; else plain create. */
+    int dopen = (size_hint && dst->open_expand) ? dst->open_expand(dp, size_hint, &fd)
+                                                 : dst->open(dp, 2 /* write/create */, &fd);
+    if (dopen != 0) {
         if (src->close) src->close(fs);
         return VFS_COPY_OPEN;
     }
@@ -207,11 +220,14 @@ int vfs_copy_open_file(vfs_driver_t *src, const char *sp,
  * success. (sort_partitions orders by address, so the SD-first preference is
  * made explicit with a two-pass scan.)
  */
-int vfs_read_module(const char *path, void *dst, uint32_t max, uint32_t *out_size) {
+/* Scan every read-capable partition (SD first, two-pass) for a valid PIE module at
+ * `path` and return the index of the HIGHEST-version copy, or -1 if none. The SD-first
+ * pass + strict '>' make the SD copy win on a version tie. Shared by vfs_read_module
+ * (full RAM read) and vfs_map_module (XIP map) so the precedence logic lives once. */
+static int find_best_module(const char *path) {
     int pcount = partition_get_count();
     int best = -1;
     uint32_t best_ver = 0;
-
     for (int pass = 0; pass < 2; pass++) {        /* pass 0: SD only; pass 1: the rest */
         for (int i = 0; i < pcount; i++) {
             partition_info_t *part = partition_get_info(i);
@@ -229,9 +245,45 @@ int vfs_read_module(const char *path, void *dst, uint32_t max, uint32_t *out_siz
             if (best < 0 || hdr.version > best_ver) { best = i; best_ver = hdr.version; }
         }
     }
-    if (best < 0) return -1;
+    return best;
+}
 
+int vfs_read_module(const char *path, void *dst, uint32_t max, uint32_t *out_size) {
+    int best = find_best_module(path);
+    if (best < 0) return -1;
     return read_from_partition(partition_get_info(best), path, dst, max, out_size);
+}
+
+/* defined in fatfs_ro.c: map a contiguous FAT file to its mapped-flash address (self-mounting). */
+extern int fat_ro_map(uint32_t base, const char *path, uint32_t *out_addr, uint32_t *out_size);
+
+/* For execute-in-place: find the highest-version copy of the module (same precedence as
+ * vfs_read_module) and, IF that copy lives on a memory-mapped FAT partition as a contiguous
+ * file, return its mapped-flash address + size so the loader can run .text in place. Returns
+ * -1 when the winning copy is not XIP-able (SD, LittleFS, non-FAT, fragmented, or absent), in
+ * which case the caller falls back to vfs_read_module (a full RAM copy). */
+int vfs_map_module(const char *path, uint32_t *out_addr, uint32_t *out_size) {
+    int best = find_best_module(path);
+    if (best < 0) return -1;
+    partition_info_t *bp = partition_get_info(best);
+    if (partition_is_sd(bp)) return -1;                                     /* SD: not mappable */
+    if (!bp->type || bp->type[0] != 'F' || bp->type[1] != 'A') return -1;   /* FAT volume only */
+    return fat_ro_map(bp->address, path, out_addr, out_size);
+}
+
+/* Map an arbitrary file (e.g. a .fnt) to its contiguous mapped-flash address for read-in-place.
+ * No version scan or header check (unlike vfs_map_module): just find the file on a memory-mapped
+ * FAT partition and return its address + size (fat_ro_map verifies contiguity). Returns -1 if the
+ * file is not a contiguous file on a mappable FAT partition; the caller falls back to a RAM read. */
+int vfs_map_file(const char *path, uint32_t *out_addr, uint32_t *out_size) {
+    int pcount = partition_get_count();
+    for (int i = 0; i < pcount; i++) {
+        partition_info_t *part = partition_get_info(i);
+        if (!part || partition_is_sd(part)) continue;
+        if (!part->type || part->type[0] != 'F' || part->type[1] != 'A') continue;  /* FAT only */
+        if (fat_ro_map(part->address, path, out_addr, out_size) == 0) return 0;
+    }
+    return -1;
 }
 
 int vfs_read_file(const char *path, void *dst, uint32_t max, uint32_t *out_size) {
@@ -287,7 +339,7 @@ int vfs_lfs_free_kb(void) {
 
 int vfs_lfs_write_file(const char *path, const void *data, uint32_t len) {
     if (!vfs_is_lfs_rw_loaded())
-        vfs_load_dynamic_driver("LFS", "/modules/filesystems/lfs_rw.bin");
+        vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
     partition_info_t *p = vfs_main_lfs();
     if (!p) return -1;
     vfs_driver_t *drv = vfs_get_driver("LFS");
@@ -356,54 +408,122 @@ int vfs_lfs_read_header(const char *path, void *dst, uint32_t n) {
     uint32_t got = 0;
     return (read_main_lfs(path, dst, n, &got) == 0 && got > 0) ? 0 : -1;
 }
+/* Header peek on ANY partition (SD / LittleFS / FAT store), so the installer can scan every source. */
+int vfs_read_header(partition_info_t *part, const char *path, void *dst, uint32_t n) {
+    uint32_t got = 0;
+    return (part && read_from_partition(part, path, dst, n, &got) == 0 && got > 0) ? 0 : -1;
+}
 
-/* Stream-copy an SD-card file to the main LittleFS in 4 KiB chunks (no whole-file
- * buffer), creating the immediate parent dir. Loads the FAT (read) + lfs_rw (write)
- * modules if needed. Returns 0 on success. This is the module-facing seam over the
- * shared vfs_copy_open_file. */
-int vfs_copy_sd_to_lfs(const char *sd_path, const char *lfs_path) {
+/* Stream-copy `sp` on `sp_part` to `dp` on `dp_part` in 4 KiB chunks (no whole-file buffer),
+ * creating the immediate parent dir. A FAT-store dest is laid out CONTIGUOUS (size -> f_expand)
+ * for XIP; size 0 is a plain copy. Loads the LFS/FAT RW drivers as needed. The generic install
+ * copy: any source (SD/LFS/FAT) -> FAT or LFS. Returns 0 on success. */
+int vfs_install_copy(partition_info_t *sp_part, const char *sp,
+                     partition_info_t *dp_part, const char *dp, uint32_t size) {
+    if (!sp_part || !dp_part) return -1;
     if (!vfs_is_lfs_rw_loaded())
-        vfs_load_dynamic_driver("LFS", "/modules/filesystems/lfs_rw.bin");
-    if (!vfs_is_fat_rw_loaded() && vfs_module_available("/modules/filesystems/fatfs.bin"))
-        vfs_load_dynamic_driver("FAT", "/modules/filesystems/fatfs.bin");
+        vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
+    if (!vfs_is_fat_rw_loaded() && vfs_module_available("/fs/fat.bin"))
+        vfs_load_dynamic_driver("FAT", "/fs/fat.bin");
 
-    partition_info_t *sd = vfs_sd_partition();
-    partition_info_t *lfs = vfs_main_lfs();
-    if (!sd || !lfs) return -1;
-    const char *sname = partition_driver_name(sd);
-    vfs_driver_t *src = sname ? vfs_get_driver(sname) : NULL;
-    vfs_driver_t *dst = vfs_get_driver("LFS");
+    vfs_driver_t *src = vfs_get_driver(partition_driver_name(sp_part));
+    vfs_driver_t *dst = vfs_get_driver(partition_driver_name(dp_part));
     if (!src || !dst || !src->mount || !dst->mount) return -1;
-    if (src->mount(sd->address, sd->size) != 0) return -1;
-    if (dst->mount(lfs->address, lfs->size) != 0) { if (src->unmount) src->unmount(); return -1; }
+    if (src->mount(sp_part->address, sp_part->size) != 0) return -1;
+    if (dst->mount(dp_part->address, dp_part->size) != 0) { if (src->unmount) src->unmount(); return -1; }
 
-    if (dst->mkdir) {                              /* one-level parent (/i18n, /drivers) */
-        const char *slash = strrchr(lfs_path, '/');
-        if (slash && slash != lfs_path) {
+    if (dst->mkdir) {                              /* one-level parent (/i18n, /modules) */
+        const char *slash = strrchr(dp, '/');
+        if (slash && slash != dp) {
             char dir[128];
-            uint32_t dn = (uint32_t)(slash - lfs_path);
-            if (dn < sizeof(dir)) { memcpy(dir, lfs_path, dn); dir[dn] = '\0'; dst->mkdir(dir); }
+            uint32_t dn = (uint32_t)(slash - dp);
+            if (dn < sizeof(dir)) { memcpy(dir, dp, dn); dir[dn] = '\0'; dst->mkdir(dir); }
         }
     }
 
-    int r = vfs_copy_open_file(src, sd_path, dst, lfs_path, 0, NULL, NULL);
+    int r = vfs_copy_open_file(src, sp, dst, dp, size, NULL, NULL);
     if (dst->unmount) dst->unmount();
     if (src->unmount) src->unmount();
     return (r == VFS_COPY_OK) ? 0 : -1;
 }
 
-int vfs_read_lang_lfs(const char *path, void *dst, uint32_t max, uint32_t *out_size,
-                      uint16_t want_abi) {
-    /* The hot path: read the canonical pack from LittleFS only, so switching the
-     * UI language never touches the slow SD card. Checks magic + ABI. */
-    *out_size = 0;
-    uint32_t got = 0;
-    if (read_main_lfs(path, dst, max, &got) != 0 || got < 12) return -1;
-    const uint8_t *h = (const uint8_t *)dst;
-    (void)want_abi;   /* the core is authoritative: enforce its OWN strings ABI, not the caller's */
-    if (!pack_abi_ok(h, LANG_PACK_MAGIC, STRINGS_ABI_VERSION)) return -1;
-    *out_size = got;
+/* SD -> main LittleFS shim over vfs_install_copy (the language/font install path). */
+int vfs_copy_sd_to_lfs(const char *sd_path, const char *lfs_path) {
+    return vfs_install_copy(vfs_sd_partition(), sd_path, vfs_main_lfs(), lfs_path, 0);
+}
+
+/* Delete `path` from `part` (loads FAT/LFS RW as needed). 0 on success; <0 if the file or a RW
+ * driver is absent. That <0 is exactly "leave the source unless it is writable" -- a read-only
+ * partition has no RW driver (unlink NULL) and a write-locked card fails the unlink. */
+int vfs_install_unlink(partition_info_t *part, const char *path) {
+    if (!part) return -1;
+    if (!vfs_is_lfs_rw_loaded())
+        vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
+    if (!vfs_is_fat_rw_loaded() && vfs_module_available("/fs/fat.bin"))
+        vfs_load_dynamic_driver("FAT", "/fs/fat.bin");
+    vfs_driver_t *drv = vfs_get_driver(partition_driver_name(part));
+    if (!drv || !drv->mount || !drv->unlink) return -1;
+    if (drv->mount(part->address, part->size) != 0) return -1;
+    int r = drv->unlink(path);
+    if (drv->unmount) drv->unmount();
+    return (r == 0) ? 0 : -1;
+}
+
+/* SD-source delete shim (the SD is delivery-only). */
+int vfs_sd_unlink(const char *path) {
+    return vfs_install_unlink(vfs_sd_partition(), path);
+}
+
+/* --- Streaming reads (handle-based) for on-demand glyph paging ---------------------- */
+int vfs_stream_open_drv(vfs_stream_t *s, vfs_driver_t *drv, uint32_t addr, uint32_t size,
+                        const char *path) {
+    if (!s) return -1;
+    s->drv = NULL; s->ctx = NULL;
+    if (!drv || !drv->mount || !drv->open || !drv->read || !drv->seek || !path) return -1;
+    if (drv->mount(addr, size) != 0) return -1;
+    void *ctx = NULL;
+    if (drv->open(path, 1 /* read */, &ctx) != 0) return -1;
+    s->drv = drv; s->ctx = ctx;
     return 0;
+}
+
+int vfs_open_stream(vfs_stream_t *s, const char *path) {
+    if (!s || !path) return -1;
+    s->drv = NULL; s->ctx = NULL;
+    int pcount = partition_get_count();
+    for (int i = 0; i < pcount; i++) {                 /* LittleFS / flash only -- never the SD */
+        partition_info_t *part = partition_get_info(i);
+        if (!part || partition_is_sd(part)) continue;
+        const char *dname = partition_driver_name(part);
+        if (!dname) continue;
+        vfs_ensure_rw(dname);                          /* load the seek-capable RW driver */
+        vfs_driver_t *drv = vfs_get_driver(dname);
+        if (drv && vfs_stream_open_drv(s, drv, part->address, part->size, path) == 0) return 0;
+    }
+    return -1;
+}
+
+int vfs_stream_read(vfs_stream_t *s, void *buf, uint32_t n) {
+    if (!s || !s->drv || !s->drv->read) return -1;
+    size_t rd = 0;
+    if (s->drv->read(s->ctx, buf, n, &rd) != 0) return -1;
+    return (int)rd;
+}
+int vfs_stream_seek(vfs_stream_t *s, uint32_t off) {
+    if (!s || !s->drv || !s->drv->seek) return -1;
+    return s->drv->seek(s->ctx, off);
+}
+void vfs_stream_close(vfs_stream_t *s) {
+    if (s && s->drv && s->drv->close) s->drv->close(s->ctx);
+    if (s) { s->drv = NULL; s->ctx = NULL; }
+}
+
+int vfs_lfs_read(const char *path, void *dst, uint32_t max, uint32_t *out_size) {
+    /* Generic LFS-only read (no SD scan): the hot path for language packs, which must
+     * never touch the slow SD card. The caller validates the file format (the language
+     * module owns the .lang magic/ABI/header knowledge). */
+    *out_size = 0;
+    return read_main_lfs(path, dst, max, out_size);
 }
 
 uint32_t vfs_lfs_lang_version(const char *path, uint16_t want_abi) {
@@ -430,35 +550,29 @@ static int is_lang_file(const vfs_dirent_t *ent) {
            ent->name[L-3] == 'a' && ent->name[L-2] == 'n' && ent->name[L-1] == 'g';
 }
 
-void vfs_lfs_enum_langs(uint16_t want_abi,
-                        void (*cb)(const char *code, const char *endonym, const char *script)) {
-    /* Walk /i18n on the main LittleFS; for each valid pack hand the discovery its
-     * self-described code + endonym + script (read straight from the 76-B header). */
-    (void)want_abi;   /* core-authoritative ABI (see vfs_read_lang_lfs) */
-    partition_info_t *p = vfs_main_lfs();
+/* Enumerate the FILE entries of `dir` on the main on-flash LittleFS, invoking cb with
+ * each name (a pointer into a transient buffer -- copy in the callback). Mounts +
+ * unmounts the LFS itself; the feature-module discovery uses this to scan
+ * /modules/features at boot (no active mount to disturb at that point). */
+void vfs_lfs_enum_dir(const char *dir, void (*cb)(const char *name)) {
+    /* The main LFS partition's driver name IS "LFS", so this is the generic enum
+     * scoped to that one partition (no separate mount/scan body needed). */
+    vfs_enum_dir(vfs_main_lfs(), dir, cb);
+}
+
+/* Enumerate `dir` on a SPECIFIC partition (any driver: the in-core FAT, LFS, ...), so feature
+ * discovery can scan the EXT-FAT module store (the XIP source), not just the LFS. Same
+ * mount/opendir/readdir dance as vfs_lfs_enum_dir, but the partition + its driver are caller-chosen. */
+void vfs_enum_dir(partition_info_t *p, const char *dir, void (*cb)(const char *name)) {
     if (!p) return;
-    vfs_driver_t *drv = vfs_get_driver("LFS");
-    if (!drv || !drv->mount || !drv->opendir || !drv->readdir || !drv->open || !drv->read) return;
+    vfs_driver_t *drv = vfs_get_driver(partition_driver_name(p));
+    if (!drv || !drv->mount || !drv->opendir || !drv->readdir) return;
     if (drv->mount(p->address, p->size) != 0) return;
     void *dctx = NULL;
-    if (drv->opendir("/i18n", &dctx) == 0) {
+    if (drv->opendir(dir, &dctx) == 0) {
         vfs_dirent_t ent;
-        while (drv->readdir(dctx, &ent) == 1) {
-            if (!is_lang_file(&ent)) continue;
-            char path[280];
-            int n = 0; const char *pre = "/i18n/";
-            while (pre[n]) { path[n] = pre[n]; n++; }
-            int m = 0; while (ent.name[m] && n < (int)sizeof(path) - 1) path[n++] = ent.name[m++];
-            path[n] = '\0';
-            uint8_t hdr[76];
-            void *fctx = NULL; size_t rd = 0;
-            if (drv->open(path, 1 /* read */, &fctx) != 0) continue;
-            drv->read(fctx, hdr, sizeof(hdr), &rd);
-            if (drv->close) drv->close(fctx);
-            if (rd < sizeof(hdr)) continue;
-            if (!pack_abi_ok(hdr, LANG_PACK_MAGIC, STRINGS_ABI_VERSION)) continue;
-            cb((const char *)(hdr + 28), (const char *)(hdr + 44), (const char *)(hdr + 12));
-        }
+        while (drv->readdir(dctx, &ent) == 1)
+            if (ent.type == VFS_TYPE_FILE) cb(ent.name);
         if (drv->closedir) drv->closedir(dctx);
     }
     if (drv->unmount) drv->unmount();
@@ -542,6 +656,17 @@ bool vfs_module_available(const char *path) {
         }
     }
     return false;
+}
+
+/* Load the RW driver for a filesystem (by driver name) on demand. Shared by the file
+ * browser + the feature host so the load logic + module paths live in one place.
+ * vfs_load_dynamic_driver already no-ops if the RW driver is loaded, so no guard needed. */
+void vfs_ensure_rw(const char *name) {
+    if (!name) return;
+    if (name[0] == 'L')
+        vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
+    else if (name[0] == 'F' && name[1] == 'A')
+        vfs_load_dynamic_driver("FAT", "/fs/fat.bin");
 }
 
 int vfs_load_dynamic_driver(const char *name, const char *bin_path) {

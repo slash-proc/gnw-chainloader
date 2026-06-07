@@ -22,12 +22,12 @@ static lang_api_t g_lang;   /* all-NULL until the module loads -> English defaul
 /* The core functions the module drives through: FS reads + the two render seams. */
 static const lang_host_t g_host = {
     .read_file           = vfs_read_file,
-    .read_lang_lfs       = vfs_read_lang_lfs,
+    .lfs_read            = vfs_lfs_read,
     .lfs_lang_version    = vfs_lfs_lang_version,
     .lfs_free_kb         = vfs_lfs_free_kb,
     .lfs_write_file      = vfs_lfs_write_file,
     .lfs_has             = vfs_lfs_has,
-    .lfs_enum_langs      = vfs_lfs_enum_langs,
+    .lfs_enum_dir        = vfs_lfs_enum_dir,
     .sd_dir_exists       = vfs_sd_dir_exists,
     .sd_list_langs       = vfs_sd_list_langs,
     .is_fat_rw_loaded    = vfs_is_fat_rw_loaded,
@@ -38,6 +38,11 @@ static const lang_host_t g_host = {
     .partition_is_sd     = partition_is_sd,
     .strings_set_active  = strings_set_active,
     .set_ext_glyph       = gui_set_ext_glyph,
+    .stream_open         = vfs_open_stream,
+    .stream_read         = vfs_stream_read,
+    .stream_seek         = vfs_stream_seek,
+    .stream_close        = vfs_stream_close,
+    .map_file            = vfs_map_file,
 };
 
 void i18n_init(void) {

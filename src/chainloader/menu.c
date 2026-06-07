@@ -13,15 +13,14 @@
 #include "i18n.h"
 #include "theme.h"
 #include "system/bench.h"
-#ifdef CRASH_TEST
-#include "system/crash_log.h"
-#endif
+#include "system/crash_log.h"   /* crash_log_init + the boot-time crash notice (always) */
 #include "../common/memory_map.h"
 #include "../common/boot_magic.h"
 #include "storage/vfs.h"
 #include "system/loader.h"
 #include "system/installer.h"
 #include "system/module.h"
+#include "system/feature.h"
 
 #ifdef ABI_SELFTEST
 /* On-device ABI-gate self-test (scripts/tests/test_abi_reject.py). Compiled in
@@ -48,7 +47,8 @@ static void abi_selftest_run(void) {
 
 /* --- Action Stubs --- */
 extern ui_window_t PAGE_BROWSER;
-static void action_browser_enter(void) { ui_push(&PAGE_BROWSER); }
+void browser_open(void);   /* ui_file_browser.c: open with full ops (default config) */
+static void action_browser_enter(void) { browser_open(); }
 static void action_retro_go(void) { board_request_jump(RETROGO_BASE); }
 static void action_ofw(void)      { board_jump_to_app(OFW_INTERNAL_BASE); }
 static void action_pwr(void)      { menu_enter_standby(); }
@@ -238,8 +238,18 @@ static bool ensure_ofw_flashed(board_console_type_t want) {
     bool zelda = (want == CONSOLE_ZELDA);
     static char ofw_title[32];
     str_fmt1_str(ofw_title, sizeof(ofw_title), tr(STR_OFW_SUFFIX), zelda ? "Zelda" : "Mario");
-    partition_flash_ofw(ofw_title, zelda ? ZELDA_SPI_OFFSET : MARIO_SPI_OFFSET, OFW_INTERNAL_SIZE);
-    return true;
+    /* Returns false (and Bank 2 is left untouched) if CRC verification of the
+     * backup/asset blob failed -- propagate that so callers don't boot or re-theme. */
+    return partition_flash_ofw(ofw_title, zelda ? ZELDA_SPI_OFFSET : MARIO_SPI_OFFSET, OFW_INTERNAL_SIZE);
+}
+
+/* True when the selected console can be booted right now: it's already the valid
+ * active OFW in Bank 2, or a verified backup was just flashed in. A failed CRC
+ * verification (or no backup) returns false so we never jump to an OFW that isn't
+ * actually bootable. */
+static bool ofw_ready_to_boot(board_console_type_t want) {
+    if (want == board_console_type && board_is_valid_app(OFW_INTERNAL_BASE)) return true;
+    return ensure_ofw_flashed(want);
 }
 
 /* Boot the selected target. Retro-Go jumps straight to Bank 1. For an OFW, flash its
@@ -247,8 +257,9 @@ static bool ensure_ofw_flashed(board_console_type_t want) {
 static void boot_selected_target(void) {
     if (g_boot_target == BT_RETROGO) { action_retro_go(); return; }
     board_console_type_t want = (g_boot_target == BT_ZELDA) ? CONSOLE_ZELDA : CONSOLE_MARIO;
-    ensure_ofw_flashed(want);
-    action_ofw();
+    /* Only jump if Bank 2 holds a verified OFW -- a failed CRC check leaves it
+     * untouched and we stay in the menu (partition_flash_ofw already showed why). */
+    if (ofw_ready_to_boot(want)) action_ofw();
 }
 
 /* GAME button on the Launch row: flash the selected OFW backup into Bank 2 to preview
@@ -299,16 +310,19 @@ static void menu_main_enter(void) {
  * one confirm; on accept commit() installs them, gated by the running firmware's
  * ABI (the install gate mirrors the loader's load gate). */
 static const installer_host_t g_installer_host = {
-    .sd_read_header  = vfs_sd_read_header,
-    .lfs_read_header = vfs_lfs_read_header,
-    .copy_sd_to_lfs  = vfs_copy_sd_to_lfs,
-    .lfs_has         = vfs_lfs_has,
-    .sd_dir_exists   = vfs_sd_dir_exists,
-    .sd_list_langs   = vfs_sd_list_langs,
-    .progress        = NULL,
-    .strings_abi     = STRINGS_ABI_VERSION,
-    .str_count       = (uint16_t)STR_COUNT,
-    .module_abi      = MODULE_ABI_VERSION,
+    .read_header   = vfs_read_header,
+    .copy          = vfs_install_copy,
+    .unlink        = vfs_install_unlink,
+    .part_count    = partition_get_count,
+    .part_info     = partition_get_info,
+    .part_is_sd    = partition_is_sd,
+    .part_fs       = partition_fs_code,
+    .sd_dir_exists = vfs_sd_dir_exists,
+    .sd_list_langs = vfs_sd_list_langs,
+    .progress      = NULL,
+    .strings_abi   = STRINGS_ABI_VERSION,
+    .str_count     = (uint16_t)STR_COUNT,
+    .module_abi    = MODULE_ABI_VERSION,
 };
 
 #define INSTALLER_PATH "/modules/installer.bin"
@@ -319,8 +333,8 @@ static const installer_host_t g_installer_host = {
  * would be a use-after-free. */
 static bool installer_prep_fs(void) {
     if (!vfs_sd_dir_exists("/i18n")) return false;
-    if (!vfs_is_fat_rw_loaded() && vfs_module_available("/modules/filesystems/fatfs.bin"))
-        vfs_load_dynamic_driver("FAT", "/modules/filesystems/fatfs.bin");
+    if (!vfs_is_fat_rw_loaded() && vfs_module_available("/fs/fat.bin"))
+        vfs_load_dynamic_driver("FAT", "/fs/fat.bin");
     return true;
 }
 
@@ -333,8 +347,8 @@ static void menu_do_install(void) {
      * ABOVE the mark where mod_pool_reset would then free it -- a use-after-free on
      * the next LittleFS write (e.g. the language-switch persist). Same reasoning as
      * the FAT load in installer_prep_fs. */
-    if (!vfs_is_lfs_rw_loaded() && vfs_module_available("/modules/filesystems/lfs_rw.bin"))
-        vfs_load_dynamic_driver("LFS", "/modules/filesystems/lfs_rw.bin");
+    if (!vfs_is_lfs_rw_loaded() && vfs_module_available("/fs/lfs.bin"))
+        vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
     uint32_t mark = mod_pool_mark();
     installer_api_t api = {0};
     int nl = 0, nm = 0;
@@ -404,6 +418,7 @@ static void menu_main_update(ui_window_t *self) {
          * draws in in-core English. */
         i18n_init();
         menu_apply_language();
+        feature_discover();   /* scan /modules/features -> dynamic Tools/Settings entries */
         menu_offer_sd_install();
 #ifdef ABI_SELFTEST
         abi_selftest_run();   /* exercise the real module + pack ABI gates once FS is up */
@@ -417,27 +432,50 @@ static void menu_main_draw(ui_window_t *self) {
 
 /* --- Tools Sub-menu Implementation --- */
 
-extern ui_window_t PAGE_PARTITION;
+/* Module Overview is disabled in-core (MODOVERVIEW_INCORE 0) to hold the 40K stub ceiling: the
+ * stub embeds the LZMA-compressed app, so app growth grows the flash image. It is slated to become
+ * an XIP feature module (basic UI, fine from slower flash). Flip to 1 to restore the in-core view. */
+#define MODOVERVIEW_INCORE 0
 
+extern ui_window_t PAGE_PARTITION;
 static void diag_action_partition(void) { ui_push(&PAGE_PARTITION); }
+#if MODOVERVIEW_INCORE
+extern ui_window_t PAGE_MODOVERVIEW;
+static void diag_action_modoverview(void) { ui_push(&PAGE_MODOVERVIEW); }
+#endif
 
 static void (*TOOLS_ACTIONS[])(void) = {
-    action_browser_enter, diag_action_partition
+    action_browser_enter, diag_action_partition,
+#if MODOVERVIEW_INCORE
+    diag_action_modoverview,
+#endif
 };
+#define TOOLS_FIXED (2 + MODOVERVIEW_INCORE)   /* File Browser, Partition Viewer (+ Module Overview) */
 
 static const char* get_tools_label(int idx) {
-    return tr(idx == 0 ? STR_FILE_BROWSER : STR_PARTITION_VIEWER);
+    if (idx == 0) return tr(STR_FILE_BROWSER);
+    if (idx == 1) return tr(STR_PARTITION_VIEWER);
+#if MODOVERVIEW_INCORE
+    if (idx == 2) return "Module Overview";
+#endif
+    return feature_label(MODULE_MENU_TOOLS, idx - TOOLS_FIXED);   /* feature entries after the fixed tools */
 }
-static void on_tools_action(int idx) { TOOLS_ACTIONS[idx](); }
+static void on_tools_action(int idx) {
+    if (idx < TOOLS_FIXED) TOOLS_ACTIONS[idx]();
+    else feature_launch(MODULE_MENU_TOOLS, idx - TOOLS_FIXED);
+}
 
 static void menu_tools_enter(void) {
     PAGE_TOOLS.title = tr(STR_TITLE_TOOLS);
-    ui_list_init(&g_list_tools, tr(STR_TITLE_TOOLS), 2, get_tools_label, on_tools_action);
+    ui_list_init(&g_list_tools, tr(STR_TITLE_TOOLS), TOOLS_FIXED, get_tools_label, on_tools_action);
     g_list_tools.visible_lines = 6;
     g_list_tools.on_back = ui_pop;
 }
 
 static void menu_tools_update(ui_window_t *self) {
+    /* Feature modules register Tools entries after the first paint (in menu_main_update),
+     * so recompute the count each frame; the list widget honors a runtime num_items. */
+    g_list_tools.num_items = TOOLS_FIXED + feature_count(MODULE_MENU_TOOLS);
     ui_list_update(&g_list_tools);
 }
 
@@ -468,8 +506,12 @@ static void action_reset_defaults(void) {
 #define SET_IDX_LANGUAGE 0
 #define SET_IDX_THEME    1
 #define SET_IDX_FASTBOOT 2
-#define SET_IDX_RESET    3
-#define SET_COUNT        4
+#define SET_STATIC_TOP   3   /* fixed rows before the feature splice (Language/Theme/Fast-Boot) */
+/* Feature-module Settings entries splice in at [SET_STATIC_TOP .. SET_STATIC_TOP+N-1];
+ * Reset Defaults is ALWAYS the last row (index SET_STATIC_TOP+N), so it stays at the
+ * bottom no matter how many modules register. */
+static int settings_reset_idx(void) { return SET_STATIC_TOP + feature_count(MODULE_MENU_SETTINGS); }
+static int settings_count(void)     { return settings_reset_idx() + 1; }
 
 /* The active language is persisted by CODE (/i18n/.active), committed on Settings
  * exit rather than on every cycle tick — a file write per keypress would
@@ -536,13 +578,16 @@ static const char* get_settings_label(int idx) {
                       false, buf, sizeof(buf));
         return buf;
     }
-    return tr(STR_RESET_DEFAULTS);
+    if (idx >= SET_STATIC_TOP && idx < settings_reset_idx())
+        return feature_label(MODULE_MENU_SETTINGS, idx - SET_STATIC_TOP);   /* spliced entries */
+    return tr(STR_RESET_DEFAULTS);   /* always the last row */
 }
 static void on_settings_action(int idx) {
-    if (idx == SET_IDX_THEME)         ui_theme_cycle(+1);
-    else if (idx == SET_IDX_LANGUAGE) ui_lang_cycle(+1);
-    else if (idx == SET_IDX_FASTBOOT) action_fastboot_toggle();
-    else if (idx == SET_IDX_RESET)    action_reset_defaults();
+    if (idx == SET_IDX_THEME)              ui_theme_cycle(+1);
+    else if (idx == SET_IDX_LANGUAGE)      ui_lang_cycle(+1);
+    else if (idx == SET_IDX_FASTBOOT)      action_fastboot_toggle();
+    else if (idx == settings_reset_idx())  action_reset_defaults();
+    else feature_launch(MODULE_MENU_SETTINGS, idx - SET_STATIC_TOP);
 }
 static void on_settings_adjust(int idx, int dir) {
     if (idx == SET_IDX_THEME)         ui_theme_cycle(dir);
@@ -560,13 +605,16 @@ static void settings_back(void) {
 
 static void menu_settings_enter(void) {
     PAGE_SETTINGS.title = tr(STR_TITLE_SETTINGS);
-    ui_list_init(&g_list_settings, tr(STR_TITLE_SETTINGS), SET_COUNT, get_settings_label, on_settings_action);
+    ui_list_init(&g_list_settings, tr(STR_TITLE_SETTINGS), settings_count(), get_settings_label, on_settings_action);
     g_list_settings.visible_lines = 6;
     g_list_settings.on_back = settings_back;
     g_list_settings.on_adjust = on_settings_adjust;
 }
 
 static void menu_settings_update(ui_window_t *self) {
+    /* Feature modules register Settings entries after the first paint, so recompute the
+     * count each frame (same as Tools); Reset Defaults rides at the bottom either way. */
+    g_list_settings.num_items = settings_count();
     ui_list_update(&g_list_settings);
 }
 
@@ -581,6 +629,13 @@ void menu_run(void) {
     menu_tools_enter();    // Pre-initialize lists
     menu_settings_enter();
     ui_push(&PAGE_MAIN);
+    crash_log_init();                       /* enable precise fault capture (Mem/Bus/Usage) */
+    if (crash_log_pending()) {              /* a recorded crash survived to boot -> surface it once */
+        static char crashbuf[48];
+        crash_log_summary(crashbuf, sizeof(crashbuf));
+        ui_show_error(crashbuf);
+        crash_log_ack();
+    }
 #ifdef CRASH_TEST
     crash_test_init();   /* clear the deliberate-fault cell before the loop polls it */
 #endif

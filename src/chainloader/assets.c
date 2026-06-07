@@ -1,6 +1,7 @@
 #include "assets.h"
 #include "gui.h"
 #include "ui.h"
+#include "ui/theme.h"
 #include "ui/gui_font.h"
 #include "board.h"
 #include "main.h"
@@ -258,7 +259,9 @@ void board_load_dynamic_assets(void) {
     gui_accent_color = RGB565(0x00, 0xD0, 0xD0);
     assets_loaded = false;
 
-    if (!board_ospi_init()) return;
+    /* No external flash means no OFW sprite assets; show the neutral Fallback
+     * theme rather than leaving the menu half-themed. */
+    if (!board_ospi_init()) { ui_set_theme_slot(THEME_SLOT_FALLBACK); return; }
 
     const uint8_t *mario_backup = (const uint8_t *)(EXTFLASH_BASE + MARIO_SPI_OFFSET);
     const uint8_t *zelda_backup = (const uint8_t *)(EXTFLASH_BASE + ZELDA_SPI_OFFSET);
@@ -272,7 +275,13 @@ void board_load_dynamic_assets(void) {
         else if (board_is_valid_app((uint32_t)zelda_backup)) { ofw_type = 2; source_fw = zelda_backup; }
     }
 
-    if (source_fw == NULL) return;
+    /* STABILITY IS LAW: never decode assets from an unvalidated backup. A wiped
+     * or stale OFW backup (e.g. left behind by an extflash reslice) reads back as
+     * garbage whose embedded asset pointer is wild, and feeding that to the LZMA
+     * decoder bus-faults the boot. Require a real OFW image first; otherwise drop
+     * to the Fallback theme and keep the menu reachable. */
+    if (source_fw && !board_is_valid_app((uint32_t)source_fw)) source_fw = NULL;
+    if (source_fw == NULL) { ui_set_theme_slot(THEME_SLOT_FALLBACK); return; }
     board_console_type = (board_console_type_t)ofw_type;
 
     if (ofw_type == 2) {
@@ -295,29 +304,35 @@ void board_load_dynamic_assets(void) {
             if (dynamic_tileset[i] != 0xFF) { assets_loaded = true; break; }
         }
     } else if (ofw_type == 1) {
+        /* The OFW stores a pointer into its OWN internal-flash image
+         * (0x08000000..0x0801FFFF). A value outside that window means the backup
+         * is corrupt/wiped -- decoding from it reads a wild address and bus-faults
+         * the boot, so only decode when the pointer is in range; otherwise leave
+         * assets_loaded false and fall through to the Fallback theme. */
         uint32_t compressed_ptr = *(const uint32_t *)(source_fw + 0x7350);
         if (compressed_ptr >= 0x08000000 && compressed_ptr < 0x08020000) {
             if ((uint32_t)source_fw == 0x08100000) compressed_ptr += 0x00100000;
             else if ((uint32_t)source_fw >= 0x90000000) compressed_ptr = (uint32_t)source_fw + (compressed_ptr - 0x08000000);
-        }
-        uint8_t pal_raw[320] = {0};
-        load_palette_from_compressed_memory(source_fw, (uint8_t *)get_scratch_buffer(), pal_raw);
-        lzma_alloc((void*)1, 0);
-        SizeT destLen = 0x10000, inSize = 0x10000;
-        ELzmaStatus status;
-        static const uint8_t lzma_props[5] = {0x5D, 0x00, 0x40, 0x00, 0x00};
-        if (app_lzma_decode(dynamic_tileset, &destLen, (const uint8_t *)compressed_ptr, &inSize, lzma_props, 5, LZMA_FINISH_ANY, &status, &lzma_allocator) == SZ_OK) {
-            for (int i = 0; i < 80; i++) {
-                uint16_t b = pal_raw[i * 4 + 0], g = pal_raw[i * 4 + 1], r = pal_raw[i * 4 + 2];
-                dynamic_palette[i] = ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | ((uint16_t)b >> 3);
+
+            uint8_t pal_raw[320] = {0};
+            load_palette_from_compressed_memory(source_fw, (uint8_t *)get_scratch_buffer(), pal_raw);
+            lzma_alloc((void*)1, 0);
+            SizeT destLen = 0x10000, inSize = 0x10000;
+            ELzmaStatus status;
+            static const uint8_t lzma_props[5] = {0x5D, 0x00, 0x40, 0x00, 0x00};
+            if (app_lzma_decode(dynamic_tileset, &destLen, (const uint8_t *)compressed_ptr, &inSize, lzma_props, 5, LZMA_FINISH_ANY, &status, &lzma_allocator) == SZ_OK) {
+                for (int i = 0; i < 80; i++) {
+                    uint16_t b = pal_raw[i * 4 + 0], g = pal_raw[i * 4 + 1], r = pal_raw[i * 4 + 2];
+                    dynamic_palette[i] = ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | ((uint16_t)b >> 3);
+                }
+                const uint8_t *nes_pal = (const uint8_t *)(EXTFLASH_BASE + 0x400000 + 0xA8B84);
+                uint8_t mario_colors[3] = {0x16, 0x27, 0x18};
+                build_nes_palette(nes_pal, mario_colors);
+                assets_loaded = true;
             }
-            const uint8_t *nes_pal = (const uint8_t *)(EXTFLASH_BASE + 0x400000 + 0xA8B84);
-            uint8_t mario_colors[3] = {0x16, 0x27, 0x18};
-            build_nes_palette(nes_pal, mario_colors);
-            assets_loaded = true;
         }
     }
-    ui_update_theme();
+    ui_update_theme();   /* demotes Default->Fallback when assets failed to load */
     SCB_CleanDCache_by_Addr((uint32_t *)dynamic_palette, sizeof(dynamic_palette));
     SCB_CleanDCache_by_Addr((uint32_t *)dynamic_tileset, sizeof(dynamic_tileset));
 }

@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "Reproductor MP3",
+  "MS_PLAYLIST": "Lista de reprod.",
+  "MS_PREV": "Ant.",
+  "MS_SEEK": "Avanzar",
+  "MS_PLAY": "Reprod.",
+  "MS_PAUSE": "Pausa",
+  "MS_NEXT": "Sig.",
+  "MS_LIST": "Lista",
+  "MS_ADD": "Añadir",
+  "MS_REMOVE": "Quitar",
+  "MS_EMPTY": "La lista está vacía.",
+  "MS_HELP_ADD": "Abre la lista y añade canciones.",
+  "MS_STOPPED": "Detenido.",
+  "MS_HELP_PLAY": "Pulsa Reproducir o abre la lista.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Avanzar  {BTN_B} Cancelar  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Elegir  {BTN_B} Salir  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Pista  {BTN_LEFTRIGHT} Acción  {BTN_B} Cerrar  {BTN_A} Elegir"
+}

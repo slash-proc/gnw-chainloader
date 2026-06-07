@@ -16,7 +16,7 @@ GNWMANAGER_VERBOSITY     ?= debug
 export GNWMANAGER_OPENOCD_DEBUG GNWMANAGER_VERBOSITY
 
 # Flashing targets using gnwmanager
-flash_chainloader: all
+flash-chainloader: all
 	@echo "Ensuring device is unswapped..."
 	-python3 scripts/debug/bank.py unswap --halt
 	@echo "Flashing chainloader..."
@@ -30,20 +30,25 @@ flash_chainloader: all
 # patched OFW goes to external flash). Run after rebuilding a module so the
 # device picks up the new binary. `all` builds them, so this depends on it —
 # keeping compile+push one cohesive flow.
-push_modules: all
+push-modules: all
 	@echo "Pushing driver modules (FS, theme, language, installer) ..."
 	@python3 scripts/build/push_batched.py \
-	    /modules/filesystems/fatfs.bin=$(BUILD_DIR)/fatfs.bin \
-	    /modules/filesystems/lfs_rw.bin=$(BUILD_DIR)/lfs_rw.bin \
+	    /fs/fat.bin=$(BUILD_DIR)/fatfs.bin \
+	    /fs/lfs.bin=$(BUILD_DIR)/lfs_rw.bin \
 	    /modules/theme/theme.bin=$(BUILD_DIR)/theme.bin \
 	    /modules/language.bin=$(BUILD_DIR)/language.bin \
-	    /modules/installer.bin=$(BUILD_DIR)/installer.bin
+	    /modules/installer.bin=$(BUILD_DIR)/installer.bin \
+	    /modules/fileops.bin=$(BUILD_DIR)/fileops.bin \
+	    /modules/features/example.bin=$(BUILD_DIR)/example.bin \
+	    /modules/features/example_set.bin=$(BUILD_DIR)/example_set.bin \
+	    /modules/features/mp3.bin=$(BUILD_DIR)/mp3.bin \
+	    /modules/features/picture.bin=$(BUILD_DIR)/picture.bin
 	-$(RESTORE_KEYSTONE)
 
 # Convenience: flash the chainloader AND deploy the modules in one go. Use this
 # after an ABI change (e.g. the module header) where the on-device modules must
 # match the freshly flashed chainloader.
-deploy: flash_chainloader push_modules
+deploy: flash-chainloader push-modules
 
 # --- Retro-Go Configuration ---
 # All variables prefixed with RG_ are automatically passed to the retro-go-sd build.
@@ -54,13 +59,13 @@ RG_INTFLASH_ADDRESS ?= 0x0800A000
 RG_OFW_ADDRESS ?= 0x08100000
 RG_FLASH_LENGTH ?= 216k
 RG_SD_CARD ?= 1
-RG_EXTFLASH_OFFSET ?= 8388608
+RG_EXTFLASH_OFFSET ?= 10485760
 RG_EXTFLASH_SIZE_MB = $(if $(filter 1,$(RG_SD_CARD)),$(EXTFLASH_SIZE),$(shell echo $$(( $(EXTFLASH_SIZE) - 8 ))))
 RG_FILESYSTEM_SIZE ?= $(if $(filter 1,$(RG_SD_CARD)),$(shell echo $$(( $(EXTFLASH_SIZE) * 1024 * 1024 - $(RG_EXTFLASH_OFFSET) ))),4194304)
 RG_DISABLE_SPLASH_SCREEN ?= 1
 RG_COMPRESS ?= 0
 RG_SINGLE_FONT ?= 1
-RG_ENABLE_SCREENSHOT ?= 0
+RG_ENABLE_SCREENSHOT ?= 1
 RG_COVERFLOW ?= 0
 RG_CHEAT_CODES ?= 0
 RG_RG_PROFILING ?= 0
@@ -79,14 +84,15 @@ RG_JA_JP ?= 0
 # We use a static list to avoid recursion if RG_VARS itself is in .VARIABLES
 RG_VARS = $(foreach v,$(filter RG_%,$(.VARIABLES)),$(if $(filter-out RG_VARS,$(v)),$(subst RG_,,$(v))=$($(v))))
 
-build_rg:
+build-rg:
 	@echo "Building Retro-Go with: $(RG_VARS)"
+	$(MAKE) -C retro-go-sd clean
 	$(MAKE) -C retro-go-sd -j$(shell nproc) $(RG_VARS) all littlefs_image
 
-build_rg_sd:
-	$(MAKE) build_rg RG_SD_CARD=1
+build-rg-sd:
+	$(MAKE) build-rg RG_SD_CARD=1
 
-flash_rg: build_rg
+flash-rg: build-rg
 	@echo "Flashing Retro-Go binaries (SD_CARD=$(RG_SD_CARD))..."
 	@if [ "$(RG_SD_CARD)" = "1" ]; then \
 		gnwmanager flash $(RG_INTFLASH_ADDRESS) retro-go-sd/build/gw_retro_go_intflash.bin \
@@ -100,34 +106,51 @@ flash_rg: build_rg
 	fi
 	-$(RESTORE_KEYSTONE)
 
-flash_rg_sd:
-	$(MAKE) flash_rg RG_SD_CARD=1
+flash-rg-sd:
+	$(MAKE) flash-rg RG_SD_CARD=1
 
-flash_mario: patch_mario
+flash-mario: patch-mario
 	@echo "Flashing Mario patched binaries..."
 	gnwmanager flash ext $(BUILD_DIR)/patched_external_mario.bin --offset=0x400000
-	gnwmanager flash ext $(BUILD_DIR)/patched_internal_mario.bin --offset=0x7c0000
+	gnwmanager flash ext $(BUILD_DIR)/patched_internal_mario.bin --offset=0x520000
 	-$(RESTORE_KEYSTONE)
 
-flash_zelda: patch_zelda
+flash-zelda: patch-zelda
 	@echo "Flashing Zelda patched binaries..."
 	gnwmanager flash ext $(BUILD_DIR)/patched_external_zelda.bin --offset=0x0
-	gnwmanager flash ext $(BUILD_DIR)/patched_internal_zelda.bin --offset=0x7e0000
+	gnwmanager flash ext $(BUILD_DIR)/patched_internal_zelda.bin --offset=0x500000
 	-$(RESTORE_KEYSTONE)
 
-flash_all: all patch
+flash-all: all patch prepare-fat-bin
 	@echo "Ensuring device is unswapped..."
 	-python3 scripts/debug/bank.py unswap --halt
 	@echo "Flashing chainloader and all patched firmware..."
 	gnwmanager flash bank1 $(BUILD_DIR)/$(TARGET).bin \
 		-- flash ext $(BUILD_DIR)/patched_external_zelda.bin --offset=0x0 \
 		-- flash ext $(BUILD_DIR)/patched_external_mario.bin --offset=0x400000 \
-		-- flash ext $(BUILD_DIR)/patched_internal_mario.bin --offset=0x7c0000 \
-		-- flash ext $(BUILD_DIR)/patched_internal_zelda.bin --offset=0x7e0000 \
+		-- flash ext $(BUILD_DIR)/patched_internal_zelda.bin --offset=0x500000 \
+		-- flash ext $(BUILD_DIR)/patched_internal_mario.bin --offset=0x520000 \
+		-- flash ext $(BUILD_DIR)/fat.bin --offset=$(FAT_OFFSET) \
 		-- start bank1
 	-$(RESTORE_KEYSTONE)
 
-.PHONY: flash_chainloader push_modules deploy flash_mario flash_zelda flash_all
+# MODULE_FAT_OFFSET (memory_map.h): the FAT module-store partition on external flash.
+FAT_OFFSET ?= 0x540000
+
+# Build the FAT module-store image (build/fat.bin) with pyfatfs: a fresh FAT16 of MODULE_FAT_SIZE
+# holding the full RW drivers at /fs/fat.bin + /fs/lfs.bin. Optional store; the chainloader and the
+# installer fall back to LittleFS without it.
+prepare-fat-bin: all
+	@echo "Building FAT module-store image (build/fat.bin)..."
+	python3 scripts/build/make_fat_image.py
+
+# Flash ONLY the FAT module store to MODULE_FAT_OFFSET (self-contained).
+flash-fatfs: prepare-fat-bin
+	@echo "Flashing FAT module store to $(FAT_OFFSET)..."
+	gnwmanager flash ext $(BUILD_DIR)/fat.bin --offset=$(FAT_OFFSET)
+	-$(RESTORE_KEYSTONE)
+
+.PHONY: flash-chainloader push-modules deploy flash-mario flash-zelda flash-all prepare-fat-bin flash-fatfs
 
 
 

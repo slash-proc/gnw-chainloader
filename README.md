@@ -38,13 +38,21 @@ It resides at `0x08000000` (Bank 1) and uses a **Dieted RAM-boot architecture**:
 
 ### Prerequisites
 
-You need a modern version of the ARM GNU Toolchain (GCC 13+ is required) and `gnwmanager` installed on your host system:
+You need a modern version of the ARM GNU Toolchain (GCC 13+ is required), a host C compiler, a handful of command-line tools, and the project's Python dependencies installed on your host system:
 
 *   **ARM GNU Toolchain:** Download and install `arm-none-eabi-gcc` from the official [Arm GNU Toolchain Downloads](https://developer.arm.com/Tools%20and%20Software/GNU%20Toolchain) page. Using package manager versions (such as `gcc-arm-none-eabi` from older `apt` repositories) is not recommended, as outdated compilers may lack optimizations required to fit the chainloader within the 40 KB flash limit.
-*   **gnwmanager:** Ensure `gnwmanager` is installed on your host. You can verify it with:
+*   **Host tools:** `make`, a host `gcc` (for the on-host unit tests and small host helper tools), `xz` (LZMA compression of the chainloader payload), and `ffmpeg` (used by the capture and `fastcap` scripts to assemble recordings). `openocd` is installed for you by `gnwmanager install openocd`.
+*   **Python dependencies:** Install the build and tooling packages with:
+    ```bash
+    pip install -r requirements.txt        # core build + device tooling
+    pip install -r requirements-dev.txt    # optional: debug/capture tools (capstone, opencv, evdev)
+    ```
+*   **gnwmanager:** The PyPI `gnwmanager` is installed via `requirements.txt` above. You can verify it with:
     ```bash
     gnwmanager --version
     ```
+
+A `Dockerfile` is provided as a turnkey alternative: it bundles the pinned ARM toolchain, all host tools, and the Python dependencies, so you can build inside the container instead of installing the above on your host.
 
 
 ### Cloning & Submodule Registration

@@ -198,7 +198,9 @@ static void yoshi_background(uint32_t tick) {
 static theme_driver_t yoshi_theme = {
     .name = "YOSHI",
     .colors = { RGB565(0x5F,0x73,0xFF), RGB565(0x00,0x00,0x00),
-                RGB565(0x00,0x50,0xA0), RGB565(0x00,0x00,0x00), RGB565(0x00,0x1A,0x50) },
+                RGB565(0x00,0x50,0xA0), RGB565(0x00,0x00,0x00),
+                RGB565(0xF8,0xBC,0x50),    /* footer = solid gold #f8bc50 (brick tile fixed later) */
+                RGB565(0x58,0x70,0xF8) },  /* header = sky-blue cloud bg #5870f8, not the footer */
     .draw_selector   = coin_selector,
     .draw_footer     = yoshi_footer,
     .draw_background = yoshi_background,

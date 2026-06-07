@@ -27,6 +27,8 @@ dist/
 venv/
 env/
 ENV/
+# ...but the QA suite's named-environment fixtures live here and are tracked.
+!scripts/tests/env/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -63,6 +65,9 @@ desktop.ini
 *.orig
 *.rej
 *.log
+
+# QA HTML reports land in the project root (rendered from build/qa_results.json).
+/*.html
 
 # --- Tooling / agents ---
 .antigravitycli

@@ -34,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common.harness import (resolve_symbol, TestRun, chainloader_running,
                             time_budget, recover_probe)
+from common import provision
 
 from gnwmanager.ocdbackend.openocd_backend import OpenOCDBackend
 
@@ -90,15 +91,11 @@ def clean_boot_and_read(timeout: float = 25.0):
     be = OpenOCDBackend()
     be.open()
     try:
-        # Each probe phase is bounded sequentially (never nested — one itimer).
-        with time_budget(20.0, "reset+boot"):
-            be.halt()
-            be.write_uint32(RG_MAGIC_ADDR, 0)      # no Retro-Go re-launch divert
-            be.write_uint32(SRAM_MAGIC_ADDR, 0)    # no chainloader BOOT-to-OFW divert
-            be.reset_and_halt()
-            be.resume()
-            time.sleep(0.4)                        # let HAL_Init bring SysTick up
-        run_ok, detail = chainloader_running(be)   # self-bounded; sequential, not nested
+        # Shared clean-reboot: clears the magic cells (so a stale Retro-Go/OFW
+        # divert can't skip the hook), reset-halts into the menu, resumes, and
+        # confirms the chainloader actually came up. One implementation, in
+        # provision.Provisioner.clean_reboot (DRY across the QA suite).
+        run_ok, detail = provision.Provisioner(backend=be).clean_reboot(settle=0.4)
         mod = pack = UNSET
         with time_budget(timeout + 10.0, "poll hook"):
             deadline = time.time() + timeout

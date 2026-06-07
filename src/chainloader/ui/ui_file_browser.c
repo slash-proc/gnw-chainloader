@@ -7,6 +7,9 @@
 #include "utils.h"
 #include "board.h"
 #include "strings.h"
+#include "system/fileops.h"
+#include "system/loader.h"
+#include "system/feature.h"
 #include <string.h>
 
 extern ui_window_t PAGE_BROWSER;
@@ -72,6 +75,32 @@ static int stack_ptr = 0;
 static browser_tab_t g_tabs[2] = { {0}, {0} };
 static int g_active_tab = 0;
 
+/* Per-session browser config: capability gates + an optional "pick" mode (A on a
+ * file hands its path to a callback instead of opening the ops menu) + an extension
+ * filter (only matching files are listed; folders always shown so you can navigate).
+ * A feature module reuses the browser as a stripped-down picker by setting these via
+ * browser_open_picker(). One live browser at a time, so a single config suffices.
+ * Default = the full browser (all ops, no pick, no filter) = today's behaviour. */
+typedef struct {
+    bool allow_copy, allow_paste, allow_delete;
+    bool pick_mode;
+    char ext_filter[16];                                 /* comma-separated lowercase exts; "" = all */
+    void (*on_pick)(const char *path, bool is_dir, uint32_t size);   /* size: bytes (0 for dirs) */
+} fb_cfg_t;
+
+static fb_cfg_t g_fb_cfg = { .allow_copy = true, .allow_paste = true, .allow_delete = true };
+
+static void fb_cfg_reset_default(void) {
+    g_fb_cfg = (fb_cfg_t){ .allow_copy = true, .allow_paste = true, .allow_delete = true };
+}
+
+/* A nested picker (browser_open_picker, e.g. from the MP3 player's Add) reuses this single
+ * browser instance, so it would clobber + unmount the suspended main browser. Snapshot the
+ * main state before the picker and restore it (re-mounting) after — kept in .bss (RAM, not
+ * the flash budget). */
+static struct { browser_tab_t tabs[2]; int active_tab; fb_cfg_t cfg; } g_picker_save;
+static bool g_picker_saved = false;
+
 static void menu_browser_back(void);
 static void open_file_context_menu(void);
 static void scan_files(void);
@@ -79,58 +108,69 @@ static void load_tab_state(void);
 static void save_tab_state(void);
 static void update_browser_title(void);
 static void mount_tab_partition(browser_tab_t *tab);
+static bool join_path(char *out, size_t cap, const char *base, const char *name);
+
+/* Storage-location prefix for the friendly FS name: EXT (external flash), SD (card),
+ * INT (internal flash), MEM (anything else). */
+static const char *fs_loc_prefix(const partition_info_t *p) {
+    if (partition_is_sd(p)) return "SD";
+    uint32_t a = p->address;
+    if (a >= 0x90000000UL && a < 0xA0000000UL) return "EXT";
+    if (a >= 0x08000000UL && a < 0x08200000UL) return "INT";
+    return "MEM";
+}
+
+/* Friendly filesystem name "<LOC>-<FS>-<NN>" (e.g. EXT-FAT-01, SD-FAT-01): storage location,
+ * type code (FAT/LFS/FROG), and a 2-digit 1-based index per (location, type). The raw base
+ * address lives in the detail pane, not the name. A non-FS partition keeps its raw type. */
+static void fs_display_name(const partition_info_t *p, char *buf, int cap) {
+    const char *fs = partition_fs_code(p);
+    if (!fs) { str_lcpy(buf, cap, p->type); return; }
+    const char *loc = fs_loc_prefix(p);
+    int idx = 0, n = partition_get_count();
+    for (int i = 0; i < n; i++) {
+        partition_info_t *q = partition_get_info(i);
+        if (q == p) break;
+        const char *qfs = q ? partition_fs_code(q) : NULL;
+        if (qfs && strcmp(qfs, fs) == 0 && strcmp(fs_loc_prefix(q), loc) == 0) idx++;
+    }
+    str_lcpy(buf, cap, loc);
+    str_lcat(buf, cap, "-");
+    str_lcat(buf, cap, fs);
+    str_lcat(buf, cap, "-");
+    char ib[8];
+    int_to_str(idx + 1, ib);
+    if (ib[1] == '\0') str_lcat(buf, cap, "0");   /* zero-pad to 2 digits */
+    str_lcat(buf, cap, ib);
+}
 
 static void update_browser_title(void) {
     char tab_indicator[16];
-    if (g_active_tab == 0) {
+    bool show_tabs = !g_fb_cfg.pick_mode;               /* picker is single-pane (no tabs) */
+    if (g_active_tab == 0 || !show_tabs) {
         tab_indicator[0] = '\0';
     } else {
         strcpy(tab_indicator, gui_rtl ? "> " : "< ");   /* LEFT/RIGHT swap in RTL */
     }
 
-    if (!active_partition) {
-        strcpy(browser_title, tab_indicator);
-        strcat(browser_title, tr(STR_SELECT_FS));
-        if (g_active_tab == 0) {
-            strcat(browser_title, gui_rtl ? " <" : " >");
-        }
-        PAGE_BROWSER.title = browser_title;
-        return;
-    }
-
     strcpy(browser_title, tab_indicator);
-    {
-        /* FS tag: <CODE>-<NN>, NN = 2-digit 1-based per-type index. e.g. "LFS-01/".
-         * The RO/RW distinction lives in the FS-list properties pane ("MODE."),
-         * not here. */
-        char t0 = active_partition->type[0];
-        char t1 = active_partition->type[1];
-        const char *code = partition_fs_code(active_partition);
-        if (!code) code = "FS";
-        strcat(browser_title, code);
-
-        /* Per-type instance index (1-based): count same-type filesystems before this one. */
-        int fs_index = 0;
-        int pcount = partition_get_count();
-        for (int i = 0; i < pcount; i++) {
-            partition_info_t *q = partition_get_info(i);
-            if (q == active_partition) break;
-            if (q && q->type[0] == t0 && q->type[1] == t1) fs_index++;
+    if (!active_partition) {
+        strcat(browser_title, tr(STR_SELECT_FS));
+    } else {
+        /* FS tag: <LOC>-<FS>-<NN>, e.g. "EXT-FAT-01:/". The RO/RW distinction + the raw
+         * address live in the FS-list detail pane, not the title. */
+        char name[24];
+        fs_display_name(active_partition, name, sizeof name);
+        strcat(browser_title, name);
+        strcat(browser_title, ":");   /* delimit the FS root, e.g. "EXT-FAT-01:/" */
+        strcat(browser_title, current_path);
+        int len = strlen(browser_title);
+        if (len > 0 && browser_title[len - 1] != '/') {
+            strcat(browser_title, "/");
         }
-        char idx_buf[8];
-        int_to_str(fs_index + 1, idx_buf);
-        strcat(browser_title, "-");
-        if (idx_buf[1] == '\0') strcat(browser_title, "0"); /* zero-pad to 2 digits */
-        strcat(browser_title, idx_buf);
     }
-    strcat(browser_title, ":");   /* delimit the FS root, e.g. "FAT-01:/" */
-    strcat(browser_title, current_path);
-    int len = strlen(browser_title);
-    if (len > 0 && browser_title[len - 1] != '/') {
-        strcat(browser_title, "/");
-    }
-    if (g_active_tab == 0) {
-        strcat(browser_title, gui_rtl ? " <" : " >");
+    if (g_active_tab == 0 && show_tabs) {
+        strcat(browser_title, gui_rtl ? " <" : " >");   /* trailing tab arrow (RTL-mirrored) */
     }
     PAGE_BROWSER.title = browser_title;
 }
@@ -149,11 +189,25 @@ static void add_entry_raw(const char *name, uint8_t type, uint32_t size) {
     file_count++;
 }
 
+/* Pointer just past the last '.' in name (the extension), or NULL if there is no
+ * dot or the only dot is the first char (a dotfile/dotfolder has no extension). */
+static const char *fb_ext(const char *name) {
+    const char *dot = NULL;
+    for (const char *p = name; *p; p++) if (*p == '.') dot = p;
+    return (dot && dot != name) ? dot + 1 : NULL;
+}
+
 static void add_file_entry(const char *name, uint8_t type, uint32_t size) {
     /* Hide dot-entries entirely (".", "..", and dotfiles/folders such as the
      * .Trashes / .Spotlight-V100 / .fseventsd / ._* noise on PC-formatted SD
      * cards). The parent-nav ".." is added explicitly by scan_files. */
     if (name[0] == '.') return;
+    /* Picker extension filter: when set, list only files with the wanted extension
+     * (folders always pass, so the user can still navigate into them). */
+    if (g_fb_cfg.ext_filter[0] && type == BROWSER_TYPE_FILE) {
+        const char *e = fb_ext(name);
+        if (!e || !ext_list_match(g_fb_cfg.ext_filter, e)) return;
+    }
     add_entry_raw(name, type, size);
 }
 
@@ -221,34 +275,22 @@ static void browser_draw_right_pane(int selected_idx, uint32_t selected_tick) {
 
     (void)selected_tick;
 
-    const int pw = 110;
-    int px = gui_mirror_x(198, pw, 0, SCREEN_WIDTH);   /* detail column mirrors left in RTL */
-    gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_TYPE), COLOR_FG, false, 0);
     const char *ext = "";
     if (file_entries[selected_idx].type == BROWSER_TYPE_DIR) {
         ext = tr(STR_DIR);
     } else {
-        const char *name = fb_name(selected_idx);
-        const char *dot = NULL;
-        for (const char *p = name; *p; p++) {
-            if (*p == '.') dot = p;
-        }
-        if (dot && dot != name) {
-            ext = dot + 1;
-        } else {
-            ext = tr(STR_FILE);
-        }
+        const char *e = fb_ext(fb_name(selected_idx));
+        ext = e ? e : tr(STR_FILE);
     }
-    gui_draw_text_aligned(px, 55, pw, ext, COLOR_FG, false, 0);
+    ui_list_pane_row(0, tr(STR_LBL_TYPE), ext, false, 0);
 
-    gui_draw_text_aligned(px, 75, pw, tr(STR_LBL_SIZE), COLOR_FG, false, 0);
-    if (file_entries[selected_idx].type == BROWSER_TYPE_DIR) {
-        gui_draw_text_aligned(px, 90, pw, "-", COLOR_FG, false, 0);
-    } else {
-        char size_buf[16];
+    char size_buf[16];
+    const char *size_val = "-";
+    if (file_entries[selected_idx].type != BROWSER_TYPE_DIR) {
         format_size(file_entries[selected_idx].size, size_buf);
-        gui_draw_text_aligned(px, 90, pw, size_buf, COLOR_FG, false, 0);
+        size_val = size_buf;
     }
+    ui_list_pane_row(1, tr(STR_LBL_SIZE), size_val, false, 0);
 }
 
 static void fs_list_draw_right_pane(int selected_idx, uint32_t selected_tick) {
@@ -256,30 +298,31 @@ static void fs_list_draw_right_pane(int selected_idx, uint32_t selected_tick) {
     (void)selected_tick;
     partition_info_t *p = fs_partitions[selected_idx];
     char buf[32];   /* holds a size string or a translated "UNKNOWN" (3 bytes/char) */
-    const int pw = 110;
-    int px = gui_mirror_x(198, pw, 0, SCREEN_WIDTH);   /* detail column mirrors left in RTL */
 
     if (fs_space_valid[selected_idx]) {
-        gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_FREE), COLOR_FG, false, 0);
         format_size_sectors(fs_free_space[selected_idx], buf);
-        gui_draw_text_aligned(px, 55, pw, buf, COLOR_FG, false, 0);
-
-        gui_draw_text_aligned(px, 75, pw, tr(STR_LBL_USED), COLOR_FG, false, 0);
+        ui_list_pane_row(0, tr(STR_LBL_FREE), buf, false, 0);
         format_size_sectors(fs_used_space[selected_idx], buf);
-        gui_draw_text_aligned(px, 90, pw, buf, COLOR_FG, false, 0);
+        ui_list_pane_row(1, tr(STR_LBL_USED), buf, false, 0);
     } else {
         /* Free/Used unavailable (read-only FatFs has no f_getfree) — show total
          * capacity instead. SD stores size as sectors (see partition.c). */
-        gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_TOTAL), COLOR_FG, false, 0);
         if (p && partition_is_sd(p))  format_size_sectors(p->size, buf);
         else if (p)                   format_size(p->size, buf);
         else                          str_lcpy(buf, sizeof(buf), tr(STR_UNKNOWN));
-        gui_draw_text_aligned(px, 55, pw, buf, COLOR_FG, false, 0);
+        ui_list_pane_row(0, tr(STR_LBL_TOTAL), buf, false, 0);
     }
 
     /* Mode row: the RO/RW distinction (moved here from the title bar). */
-    gui_draw_text_aligned(px, 110, pw, tr(STR_LBL_MODE), COLOR_FG, false, 0);
-    gui_draw_text_aligned(px, 125, pw, fs_is_rw[selected_idx] ? tr(STR_MODE_RW) : tr(STR_MODE_RO), COLOR_FG, false, 0);
+    ui_list_pane_row(2, tr(STR_LBL_MODE), fs_is_rw[selected_idx] ? tr(STR_MODE_RW) : tr(STR_MODE_RO), false, 0);
+
+    /* Address row: the raw partition base (the SD shows its sentinel 0xC0000000). */
+    if (p) {
+        char addr_buf[16];
+        str_lcpy(addr_buf, sizeof addr_buf, "0x");
+        hex_to_str(p->address, addr_buf + 2, 8);
+        ui_list_pane_row(3, tr(STR_LBL_ADDR), addr_buf, false, 0);
+    }
 }
 
 static void on_file_action(int idx) {
@@ -304,8 +347,32 @@ static void on_file_action(int idx) {
             g_list_browser.selected = 0;
             g_list_browser.scroll_y = 0;
             g_list_browser.selected_tick = HAL_GetTick();
+        } else if (g_fb_cfg.pick_mode) {
+            /* Picker: hand the chosen file's full path to the callback (e.g. a feature
+             * module's pick_file) instead of opening copy/paste/delete. */
+            if (g_fb_cfg.on_pick) {
+                char buf[512];
+                if (join_path(buf, sizeof(buf), current_path, fb_name(idx)))
+                    g_fb_cfg.on_pick(buf, false, file_entries[idx].size);
+            }
         } else {
-            open_file_context_menu();
+            /* If a feature module is registered for this file's extension, launch it
+             * with the file (the core names no extension itself); else the ops menu. */
+            const char *name = fb_name(idx);
+            const char *e = fb_ext(name);
+            const char *modpath = e ? feature_path_for_ext(e) : NULL;
+            char full[512];
+            if (modpath && join_path(full, sizeof(full), current_path, name)) {
+                feature_launch_path(modpath, full, active_partition);
+                /* The transient module load disturbed our mount; re-establish + refresh. */
+                const char *dn = partition_driver_name(active_partition);
+                vfs_driver_t *d = dn ? vfs_get_driver(dn) : NULL;
+                if (d && d->mount) d->mount(active_partition->address, active_partition->size);
+                scan_files();
+                g_list_browser.num_items = file_count;
+            } else {
+                open_file_context_menu();
+            }
         }
     }
 }
@@ -327,7 +394,7 @@ static void build_fs_list(void) {
                     vfs_driver_t *ro_drv = vfs_get_driver("LFS");
                     if (ro_drv && ro_drv->mount(p->address, p->size) == 0) {
                         void *f = NULL;
-                        if (ro_drv->open("/modules/filesystems/lfs_rw.bin", 1, &f) == 0) {
+                        if (ro_drv->open("/fs/lfs.bin", 1, &f) == 0) {
                             ro_drv->close(f);
                             fs_is_rw[fs_partition_count] = true;
                         }
@@ -340,7 +407,7 @@ static void build_fs_list(void) {
                             fs_free_space[fs_partition_count] = fre;
                             fs_space_valid[fs_partition_count] = true;
                         }
-                        
+
                         ro_drv->unmount();
                     }
                 } else if (t0 == 'F' && t1 == 'r') {
@@ -361,8 +428,8 @@ static void build_fs_list(void) {
                      * MODE shows RW and f_getfree yields real Free/Used here in
                      * the selector (not just after the tab is entered). */
                     if (!vfs_is_fat_rw_loaded() &&
-                        vfs_module_available("/modules/filesystems/fatfs.bin")) {
-                        vfs_load_dynamic_driver("FAT", "/modules/filesystems/fatfs.bin");
+                        vfs_module_available("/fs/fat.bin")) {
+                        vfs_load_dynamic_driver("FAT", "/fs/fat.bin");
                     }
                     vfs_driver_t *fat_drv = vfs_get_driver("FAT");
                     fs_is_rw[fs_partition_count] = (fat_drv && fat_drv->write != NULL);
@@ -388,24 +455,7 @@ static const char* fs_list_get_label(int idx) {
     static char buf[48];
     if (idx >= 0 && idx < fs_partition_count) {
         partition_info_t* p = fs_partitions[idx];
-        if (strcmp(p->type, "LittleFS") == 0) {
-            str_lcpy(buf, sizeof(buf), tr(STR_FS_LITTLEFS));
-        } else {
-            /* Raw FS type code (FAT, Frog, ...) stays literal -- not translatable.
-             * Force-upper the raw code only; never the translated label above. */
-            int len = strlen(p->type);
-            for (int j = 0; j < len; j++) {
-                char c = p->type[j];
-                buf[j] = (c >= 'a' && c <= 'z') ? (c - 'a' + 'A') : c;
-            }
-            buf[len] = '\0';
-        }
-        /* Show "RW" right after the type when the RW module loaded successfully
-         * (e.g. "LITTLEFS RW" / "FAT RW"), so it's recognizable at a glance; the
-         * MODE pane carries the same RO/RW too. */
-        if (fs_is_rw[idx]) { str_lcat(buf, sizeof(buf), " "); str_lcat(buf, sizeof(buf), tr(STR_MODE_RW)); }
-        strcat(buf, " @ 0x");
-        hex_to_str(p->address, buf + strlen(buf), 8);
+        fs_display_name(p, buf, sizeof(buf));   /* "<LOC>-<FS>-<NN>", e.g. EXT-FAT-01 */
         return buf;
     }
     return "";
@@ -437,9 +487,7 @@ static void fs_list_on_action(int idx) {
         g_list_browser.on_back = menu_browser_back;
         
         if (mount_res == 0) {
-            g_list_browser.is_split = true;
-            g_list_browser.draw_right_pane = browser_draw_right_pane;
-            g_list_browser.visible_lines = 9;
+            ui_list_set_split(&g_list_browser, browser_draw_right_pane);
         }
     }
 }
@@ -464,9 +512,7 @@ static void menu_browser_back(void) {
         g_mode = BROWSER_MODE_FS_LIST;
         update_browser_title();
         ui_list_init(&g_list_browser, browser_title, fs_partition_count, fs_list_get_label, fs_list_on_action);
-        g_list_browser.is_split = true;
-        g_list_browser.draw_right_pane = fs_list_draw_right_pane;
-        g_list_browser.visible_lines = 9;
+        ui_list_set_split(&g_list_browser, fs_list_draw_right_pane);
         g_list_browser.on_back = ui_pop;
         g_list_browser.selected = prev_selected;
     } else {
@@ -497,12 +543,7 @@ static void mount_tab_partition(browser_tab_t *tab) {
 
     /* Each filesystem's RW driver is a PIE module loaded on demand when its tab
      * is entered, registering over the in-core RO driver of the same name. */
-    if (driver_name && driver_name[0] == 'L' && !vfs_is_lfs_rw_loaded()) {
-        vfs_load_dynamic_driver("LFS", "/modules/filesystems/lfs_rw.bin");
-    } else if (driver_name && driver_name[0] == 'F' && driver_name[1] == 'A' &&
-               !vfs_is_fat_rw_loaded()) {
-        vfs_load_dynamic_driver("FAT", "/modules/filesystems/fatfs.bin");
-    }
+    vfs_ensure_rw(driver_name);
 
     vfs_driver_t *drv = driver_name ? vfs_get_driver(driver_name) : NULL;
     if (drv && drv->mount) {
@@ -537,15 +578,11 @@ static void load_tab_state(void) {
     
     if (g_mode == BROWSER_MODE_FS_LIST) {
         ui_list_init(&g_list_browser, browser_title, fs_partition_count, fs_list_get_label, fs_list_on_action);
-        g_list_browser.is_split = true;
-        g_list_browser.draw_right_pane = fs_list_draw_right_pane;
-        g_list_browser.visible_lines = 9;
+        ui_list_set_split(&g_list_browser, fs_list_draw_right_pane);
         g_list_browser.on_back = ui_pop;
     } else {
         ui_list_init(&g_list_browser, browser_title, file_count, get_file_label, on_file_action);
-        g_list_browser.is_split = true;
-        g_list_browser.draw_right_pane = browser_draw_right_pane;
-        g_list_browser.visible_lines = 9;
+        ui_list_set_split(&g_list_browser, browser_draw_right_pane);
         g_list_browser.on_back = menu_browser_back;
     }
     
@@ -613,8 +650,9 @@ static void menu_browser_update(ui_window_t *self) {
         return;
     }
     
-    // Switch tabs with LEFT / RIGHT
-    if (input_just_pressed(INPUT_LEFT) || input_just_pressed(INPUT_RIGHT)) {
+    // Switch tabs with LEFT / RIGHT (single-pane picker has no tabs)
+    if (!g_fb_cfg.pick_mode &&
+        (input_just_pressed(INPUT_LEFT) || input_just_pressed(INPUT_RIGHT))) {
         save_tab_state();
         tab_unmount(&g_tabs[g_active_tab]);
         g_active_tab = 1 - g_active_tab;
@@ -622,11 +660,26 @@ static void menu_browser_update(ui_window_t *self) {
         return;
     }
     
-    if (g_mode == BROWSER_MODE_NAVIGATE) {
-        if (input_just_pressed(INPUT_PAUSE)) {
+    if (g_mode == BROWSER_MODE_NAVIGATE && input_just_pressed(INPUT_PAUSE)) {
+        if (g_fb_cfg.pick_mode) {
+            /* Picker: PAUSE adds the HIGHLIGHTED entry (a folder -> add it whole, the caller
+             * enumerates it; a file -> add it; ".." -> add the folder you're in). */
+            int sel = g_list_browser.selected;
+            if (g_fb_cfg.on_pick && sel >= 0 && sel < file_count) {
+                if (strcmp(fb_name(sel), PARENT_DIR_DOTS) == 0) {
+                    g_fb_cfg.on_pick(current_path, true, 0);
+                } else {
+                    char buf[512];
+                    if (join_path(buf, sizeof(buf), current_path, fb_name(sel))) {
+                        bool isdir = (file_entries[sel].type == BROWSER_TYPE_DIR);
+                        g_fb_cfg.on_pick(buf, isdir, isdir ? 0 : file_entries[sel].size);
+                    }
+                }
+            }
+        } else {
             open_file_context_menu();
-            return;
         }
+        return;
     }
     
     if (g_mode == BROWSER_MODE_NAVIGATE && file_count == 0 && (input_just_pressed(INPUT_B) || input_just_pressed(INPUT_START))) {
@@ -649,13 +702,12 @@ static void menu_browser_draw(ui_window_t *self) {
             gui_draw_text(20, 60, tr(STR_NO_FILESYSTEMS), COLOR_RED);
         }
     } else if (g_mode == BROWSER_MODE_NAVIGATE) {
-        ui_draw_footer(tr(STR_FOOTER_BROWSER));
+        ui_draw_footer(g_fb_cfg.pick_mode ? tr(STR_FOOTER_PICKER)
+                                          : tr(STR_FOOTER_BROWSER));
         if (file_count == 0) {
             if (mount_res != 0) {
-                char buf[64], num[12];
-                int_to_str(mount_res, num);
-                str_lcpy(buf, sizeof(buf), tr(STR_MOUNT_FAIL));
-                str_lcat(buf, sizeof(buf), num);
+                char buf[64];
+                str_fmt1_int(buf, sizeof(buf), tr(STR_MOUNT_FAIL), mount_res);
                 gui_draw_text(20, 60, buf, COLOR_RED);
             } else {
                 gui_draw_text(20, 60, tr(STR_EMPTY_DIR), COLOR_RED);
@@ -670,21 +722,20 @@ static char copy_src_name[256];
 static uint32_t copy_src_size = 0;
 static bool copy_src_is_dir = false;
 
-#define MAX_COPY_DEPTH 8        /* recursion guard for folder copy (matches nav stack) */
-
-typedef enum {
-    CP_OK = 0, CP_CANCEL, CP_OPEN_ERR, CP_READ_ERR, CP_WRITE_ERR, CP_DISK_FULL, CP_TOO_DEEP, CP_PATH_LONG
-} cp_result_t;
-
-static const char *cp_msg(cp_result_t r) {
+/* Map a FILEOPS_* result (from the in-core single-file copy or the fileops module)
+ * to a translated error string; NULL = success/cancel (no modal). */
+static const char *cp_msg(int r) {
     switch (r) {
-        case CP_OPEN_ERR:  return tr(STR_ERR_OPEN);
-        case CP_READ_ERR:  return tr(STR_ERR_READ);
-        case CP_WRITE_ERR: return tr(STR_WRITE_ERROR);
-        case CP_DISK_FULL: return tr(STR_ERR_DISK_FULL);
-        case CP_TOO_DEEP:  return tr(STR_ERR_TREE_DEEP);
-        case CP_PATH_LONG: return tr(STR_ERR_PATH_LONG);
-        default:           return NULL;   /* CP_OK / CP_CANCEL: no modal */
+        case FILEOPS_OPEN_ERR:  return tr(STR_ERR_OPEN);
+        case FILEOPS_READ_ERR:  return tr(STR_ERR_READ);
+        case FILEOPS_WRITE_ERR: return tr(STR_WRITE_ERROR);
+        case FILEOPS_DISK_FULL: return tr(STR_ERR_DISK_FULL);
+        case FILEOPS_TOO_DEEP:  return tr(STR_ERR_TREE_DEEP);
+        case FILEOPS_PATH_LONG: return tr(STR_ERR_PATH_LONG);
+        case FILEOPS_NO_SPACE:  return tr(STR_ERR_NO_SPACE);
+        case FILEOPS_COPY_SELF: return tr(STR_ERR_COPY_SELF);
+        case FILEOPS_SRC_READ:  return tr(STR_ERR_SRC_READ);
+        default:                return NULL;   /* OK / CANCEL: no modal */
     }
 }
 
@@ -707,7 +758,6 @@ static bool join_path(char *out, size_t cap, const char *base, const char *name)
  * animates without bottlenecking on a full-frame flush per chunk/entry. */
 static bool g_op_cancelled = false;
 static uint32_t g_op_ui_tick = 0;
-static int g_size_count = 0;   /* files counted so far during the pre-flight walk */
 
 static bool op_poll(void) {
     input_update();   /* update_progress_ui() doesn't, so do it here for cancel */
@@ -723,25 +773,6 @@ static void op_progress(int pct, const char *title, const char *name) {
     }
 }
 
-/* Read the n-th real entry (skipping "." and "..") of `path` on `drv`, re-opening
- * the directory each call so no handle is held across recursion (the driver dir
- * pools are only 2 deep). Returns 1 if found (ent filled), 0 past the end, -1 on
- * opendir failure. O(n) per call — fine for an occasional, progress-shown copy. */
-static int read_nth_entry(vfs_driver_t *drv, const char *path, int n, vfs_dirent_t *ent) {
-    void *dir = NULL;
-    if (drv->opendir(path, &dir) != 0) return -1;
-    int count = 0, found = 0;
-    vfs_dirent_t e;
-    while (drv->readdir(dir, &e) > 0) {
-        if (e.name[0] == '.' && (e.name[1] == '\0' ||
-            (e.name[1] == '.' && e.name[2] == '\0'))) continue;   /* skip "." / ".." */
-        if (count == n) { *ent = e; found = 1; break; }
-        count++;
-    }
-    if (drv->closedir) drv->closedir(dir);
-    return found ? 1 : 0;
-}
-
 /* Progress/cancel for the shared in-core streaming copy: pump the UI, honor the
  * PWR/B cancel; `user` is the display name. */
 static int fb_copy_progress(int pct, void *user) {
@@ -751,72 +782,79 @@ static int fb_copy_progress(int pct, void *user) {
 }
 
 /* Copy a single regular file (drivers already mounted) via the shared in-core copy
- * loop (vfs_copy_open_file), mapping its result to the browser's cp_result_t. */
-static cp_result_t copy_one_file(vfs_driver_t *sd, const char *sp,
-                                 vfs_driver_t *dd, const char *dp,
-                                 uint32_t size, const char *disp) {
+ * loop (vfs_copy_open_file). The browser keeps ONLY this basic single-file copy;
+ * folder copy / delete go to the fileops module. Returns a FILEOPS_* code. */
+static int copy_one_file(vfs_driver_t *sd, const char *sp,
+                         vfs_driver_t *dd, const char *dp,
+                         uint32_t size, const char *disp) {
     switch (vfs_copy_open_file(sd, sp, dd, dp, size, fb_copy_progress, (void *)disp)) {
-        case VFS_COPY_OK:     return CP_OK;
-        case VFS_COPY_CANCEL: return CP_CANCEL;
-        case VFS_COPY_FULL:   return CP_DISK_FULL;
-        case VFS_COPY_READ:   return CP_READ_ERR;
-        case VFS_COPY_WRITE:  return CP_WRITE_ERR;
-        default:              return CP_OPEN_ERR;
+        case VFS_COPY_OK:     return FILEOPS_OK;
+        case VFS_COPY_CANCEL: return FILEOPS_CANCEL;
+        case VFS_COPY_FULL:   return FILEOPS_DISK_FULL;
+        case VFS_COPY_READ:   return FILEOPS_READ_ERR;
+        case VFS_COPY_WRITE:  return FILEOPS_WRITE_ERR;
+        default:              return FILEOPS_OPEN_ERR;
     }
 }
 
-/* Sum the byte sizes of every regular file under `path` (recursively). Sets
- * *ok=false on any error (opendir failure / too deep). No-malloc, pool-safe via
- * read_nth_entry (re-scan per entry). */
-static uint64_t tree_size_bytes(vfs_driver_t *drv, const char *path, int depth, bool *ok) {
-    if (depth > MAX_COPY_DEPTH) { *ok = false; return 0; }
-    uint64_t total = 0;
-    vfs_dirent_t ent;
-    int n = 0, r;
-    while ((r = read_nth_entry(drv, path, n, &ent)) == 1) {
-        if (op_poll()) { *ok = false; return total; }   /* cancelable */
-        if (ent.type == VFS_TYPE_DIR) {
-            char child[512];
-            if (!join_path(child, sizeof(child), path, ent.name)) { *ok = false; return total; }
-            total += tree_size_bytes(drv, child, depth + 1, ok);
-            if (!*ok) return total;
-        } else {
-            total += ent.size;
-            g_size_count++;
-            /* "Calculating..." with a live running file count (no real % yet —
-             * we don't know the total until we finish counting). */
-            char status[24];
-            str_fmt1_int(status, sizeof(status), tr(STR_FILE_N), g_size_count);
-            op_progress((int)((HAL_GetTick() / 20) % 100), tr(STR_CALCULATING), status);
-        }
-        n++;
+/* --- fileops module seam ---------------------------------------------------
+ * The heavy tree ops (recursive copy, delete, the size walk) live in
+ * /modules/fileops.bin. The core hands the module already-mounted drivers + a
+ * progress/cancel UI seam; the translated strings + the single in-core 4 KiB copy
+ * buffer stay here. */
+static void fileops_progress(int pct, int phase, const char *name, int count) {
+    const char *title = (phase == FILEOPS_PHASE_COPY)   ? tr(STR_COPYING)
+                      : (phase == FILEOPS_PHASE_DELETE) ? tr(STR_DELETING)
+                      :                                   tr(STR_CALCULATING);
+    char namebuf[24];
+    if (phase == FILEOPS_PHASE_CALC) {   /* "File N" running count (no real % yet) */
+        str_fmt1_int(namebuf, sizeof(namebuf), tr(STR_FILE_N), count);
+        name = namebuf;
     }
-    if (r < 0) *ok = false;
-    return total;
+    op_progress(pct, title, name);
 }
+static int fileops_poll(void) { return op_poll() ? 1 : 0; }
 
-/* Recursively copy the directory tree at `sp` (on sd) to `dp` (on dd): mkdir the
- * target, then copy each file and recurse into each subdir. Pool-safe (no dir
- * handle is held across the recursive call). */
-static cp_result_t copy_tree(vfs_driver_t *sd, const char *sp,
-                             vfs_driver_t *dd, const char *dp, int depth) {
-    if (depth > MAX_COPY_DEPTH) return CP_TOO_DEEP;
-    if (dd->mkdir(dp) != 0) return CP_WRITE_ERR;   /* exists or unwritable */
+static const fileops_host_t g_fileops_host = {
+    .get_tick       = HAL_GetTick,
+    .copy_open_file = vfs_copy_open_file,
+    .poll           = fileops_poll,
+    .progress       = fileops_progress,
+};
 
-    vfs_dirent_t ent;
-    int n = 0, r;
-    while ((r = read_nth_entry(sd, sp, n, &ent)) == 1) {
-        if (op_poll()) return CP_CANCEL;
-        char sc[512], dc[512];
-        if (!join_path(sc, sizeof(sc), sp, ent.name) ||
-            !join_path(dc, sizeof(dc), dp, ent.name)) return CP_PATH_LONG;
-        cp_result_t res = (ent.type == VFS_TYPE_DIR)
-            ? copy_tree(sd, sc, dd, dc, depth + 1)
-            : copy_one_file(sd, sc, dd, dc, ent.size, ent.name);
-        if (res != CP_OK) return res;
-        n++;
+/* Transiently load /modules/fileops.bin, run one op, reclaim the slot. The RW
+ * driver(s) the op writes through are already loaded RESIDENT (below this mark) by
+ * the caller, so the reset can't free a driver the vfs still points at. */
+static int run_fileops_copy(vfs_driver_t *src, const char *sp, vfs_driver_t *dst,
+                            const char *dp, int is_dir, uint32_t size, int same_vol) {
+    uint32_t mark = mod_pool_mark();
+    fileops_api_t api = {0};
+    int res = FILEOPS_OPEN_ERR;   /* module missing/invalid -> a generic error modal */
+    if (mod_load_fileops("/modules/fileops.bin", &g_fileops_host, &api) && api.copy) {
+        /* mod_load_fileops scans the filesystems (SD first) to find the image, which
+         * leaves the active src/dst mounts disturbed -- so a later mkdir/write hits the
+         * wrong (or no) volume. RE-MOUNT both AFTER the load, just before the op. */
+        if (copy_src_partition && src->mount)
+            src->mount(copy_src_partition->address, copy_src_partition->size);
+        if (active_partition && active_partition != copy_src_partition && dst->mount)
+            dst->mount(active_partition->address, active_partition->size);
+        res = api.copy(&g_fileops_host, src, sp, dst, dp, is_dir, size, same_vol);
     }
-    return (r < 0) ? CP_READ_ERR : CP_OK;
+    mod_pool_reset(mark);
+    return res;
+}
+static int run_fileops_del(vfs_driver_t *drv, const char *path, int is_dir) {
+    uint32_t mark = mod_pool_mark();
+    fileops_api_t api = {0};
+    int res = FILEOPS_WRITE_ERR;
+    if (mod_load_fileops("/modules/fileops.bin", &g_fileops_host, &api) && api.del) {
+        /* The module load disturbed the active mount (see run_fileops_copy); re-mount. */
+        if (active_partition && drv->mount)
+            drv->mount(active_partition->address, active_partition->size);
+        res = api.del(&g_fileops_host, drv, path, is_dir);
+    }
+    mod_pool_reset(mark);
+    return res;
 }
 
 #define ACT_CANCEL 0
@@ -829,32 +867,10 @@ static int context_actions[8];
 static const char *g_file_opts[8];
 static int g_file_opts_count = 0;
 
-/* Recursively delete a directory and everything under it: empty it depth-first
- * (unlink files, recurse into subdirs), then remove the now-empty dir itself —
- * lfs_remove / f_unlink both refuse a non-empty directory. Pool-safe (no dir
- * handle held across recursion) and cancelable. Always re-reads entry 0 because
- * the listing shrinks as we delete. */
-static cp_result_t delete_tree(vfs_driver_t *drv, const char *path, int depth) {
-    if (depth > MAX_COPY_DEPTH) return CP_TOO_DEEP;
-
-    vfs_dirent_t ent;
-    int r;
-    while ((r = read_nth_entry(drv, path, 0, &ent)) == 1) {
-        if (op_poll()) return CP_CANCEL;
-        char child[512];
-        if (!join_path(child, sizeof(child), path, ent.name)) return CP_PATH_LONG;
-        if (ent.type == VFS_TYPE_DIR) {
-            cp_result_t res = delete_tree(drv, child, depth + 1);
-            if (res != CP_OK) return res;
-        } else {
-            op_progress((int)((HAL_GetTick() / 20) % 100), tr(STR_DELETING), ent.name);
-            if (drv->unlink(child) != 0) return CP_WRITE_ERR;   /* bail (avoids re-reading the same entry forever) */
-        }
-    }
-    if (r < 0) return CP_READ_ERR;
-    return (drv->unlink(path) == 0) ? CP_OK : CP_WRITE_ERR;   /* remove the now-empty dir */
-}
-
+/* Delete the selected file/folder. ALL delete (single file or recursive tree) runs
+ * in the transient fileops module; the in-core browser keeps no delete code. The
+ * active partition's RW driver is already loaded RESIDENT (mount_tab_partition), so
+ * it sits below the fileops pool mark. */
 static void perform_delete(void) {
     int sel_idx = g_list_browser.selected;
     if (sel_idx < 0 || sel_idx >= file_count) return;
@@ -875,12 +891,7 @@ static void perform_delete(void) {
     g_op_cancelled = false;
     g_op_ui_tick = 0;
 
-    cp_result_t res;
-    if (is_dir) {
-        res = delete_tree(drv, path_to_del, 0);     /* recursive (handles non-empty) */
-    } else {
-        res = (drv->unlink(path_to_del) == 0) ? CP_OK : CP_WRITE_ERR;
-    }
+    int res = run_fileops_del(drv, path_to_del, is_dir);
 
     ui_operation_in_progress = false;
 
@@ -889,37 +900,34 @@ static void perform_delete(void) {
     if (g_list_browser.selected >= file_count) g_list_browser.selected = file_count - 1;
     if (g_list_browser.selected < 0) g_list_browser.selected = 0;
 
-    if (res != CP_OK && res != CP_CANCEL) ui_show_error(tr(STR_ERR_DELETE_FAILED));
+    if (res != FILEOPS_OK && res != FILEOPS_CANCEL) ui_show_error(tr(STR_ERR_DELETE_FAILED));
 }
 
 static void perform_paste(void) {
     if (!copy_src_partition || !active_partition) return;
-    
+
     static char dst_path[512];
     join_path(dst_path, sizeof(dst_path), current_path, copy_src_name);
 
     ui_operation_in_progress = true;
     g_op_cancelled = false;
     g_op_ui_tick = 0;
-    g_size_count = 0;
 
     char src_t0 = copy_src_partition->type[0];
     char src_t1 = copy_src_partition->type[1];
-    
-    // Ensure source driver is loaded
+
+    /* Ensure the source RW driver is loaded RESIDENT (it sits below any fileops
+     * mark, so the transient reclaim can't free a driver the vfs still uses). */
     if (src_t0 == 'F' && src_t1 == 'A') {
-        if (vfs_get_driver("FAT") == NULL) {
-            vfs_load_dynamic_driver("FAT", "/modules/filesystems/fatfs.bin");
-        }
+        if (vfs_get_driver("FAT") == NULL)
+            vfs_load_dynamic_driver("FAT", "/fs/fat.bin");
     } else if (src_t0 == 'L') {
-        if (!vfs_is_lfs_rw_loaded()) {
-            vfs_load_dynamic_driver("LFS", "/modules/filesystems/lfs_rw.bin");
-        }
+        if (!vfs_is_lfs_rw_loaded())
+            vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
     }
-    
+
     const char *src_driver_name = partition_driver_name(copy_src_partition);
     vfs_driver_t *src_drv = src_driver_name ? vfs_get_driver(src_driver_name) : NULL;
-
     const char *dst_driver_name = partition_driver_name(active_partition);
     vfs_driver_t *dst_drv = dst_driver_name ? vfs_get_driver(dst_driver_name) : NULL;
 
@@ -928,25 +936,11 @@ static void perform_paste(void) {
         ui_operation_in_progress = false;
         return;
     }
-
     /* A directory paste needs the target to support mkdir (RW module loaded). */
     if (copy_src_is_dir && !dst_drv->mkdir) {
         ui_show_error(tr(STR_ERR_READ_ONLY));
         ui_operation_in_progress = false;
         return;
-    }
-
-    /* Guard against pasting a folder into itself or a descendant (same volume):
-     * copy_tree would recurse into the copy it's writing and run away. Only a
-     * concern when source and destination are the same partition. */
-    if (copy_src_is_dir && copy_src_partition == active_partition) {
-        size_t sl = strlen(copy_src_path);
-        if (strncmp(dst_path, copy_src_path, sl) == 0 &&
-            (dst_path[sl] == '/' || dst_path[sl] == '\0')) {
-            ui_show_error(tr(STR_ERR_COPY_SELF));
-            ui_operation_in_progress = false;
-            return;
-        }
     }
 
     bool need_src_mount = (copy_src_partition != active_partition);
@@ -958,37 +952,23 @@ static void perform_paste(void) {
         }
     }
 
-    /* Pre-flight free-space check: refuse upfront (all-or-nothing) rather than
-     * writing partial data and aborting mid-stream. For a folder, sum the whole
-     * tree. statfs reports 512-byte sectors (overflow-safe). Skipped if the
-     * driver can't report free space (the mid-write DISK FULL guard still fires).*/
-    uint32_t dtot = 0, dfree = 0;
-    if (dst_drv->statfs && dst_drv->statfs(&dtot, &dfree) == 0) {
-        uint64_t need = copy_src_size;
-        if (copy_src_is_dir) {
-            bool ok = true;
-            need = tree_size_bytes(src_drv, copy_src_path, 0, &ok);
-            if (!ok) {
-                if (need_src_mount) src_drv->unmount();
-                if (!g_op_cancelled) ui_show_error(tr(STR_ERR_SRC_READ));  /* silent on cancel */
-                ui_operation_in_progress = false;
-                return;
-            }
-        }
-        if (need > (uint64_t)dfree * 512u) {
-            if (need_src_mount) src_drv->unmount();
-            ui_show_error(tr(STR_ERR_NO_SPACE));
-            ui_operation_in_progress = false;
-            return;
-        }
-    }
-
-    cp_result_t res;
+    int res;
     if (copy_src_is_dir) {
-        res = copy_tree(src_drv, copy_src_path, dst_drv, dst_path, 0);
+        /* Folder: the fileops module runs the self-copy guard, free-space pre-flight
+         * (tree walk) and the recursive copy. */
+        res = run_fileops_copy(src_drv, copy_src_path, dst_drv, dst_path, 1,
+                               copy_src_size, copy_src_partition == active_partition);
     } else {
-        res = copy_one_file(src_drv, copy_src_path, dst_drv, dst_path,
-                            copy_src_size, copy_src_name);
+        /* Basic single-file copy stays in-core (the shared 4 KiB loop), with a
+         * simple free-space check since the file size is known. */
+        uint32_t dtot = 0, dfree = 0;
+        if (dst_drv->statfs && dst_drv->statfs(&dtot, &dfree) == 0 &&
+            (uint64_t)copy_src_size > (uint64_t)dfree * 512u) {
+            res = FILEOPS_NO_SPACE;
+        } else {
+            res = copy_one_file(src_drv, copy_src_path, dst_drv, dst_path,
+                                copy_src_size, copy_src_name);
+        }
     }
 
     if (need_src_mount) src_drv->unmount();
@@ -1043,24 +1023,25 @@ static void open_file_context_menu(void) {
     }
     bool can_paste = (copy_src_partition != NULL && is_rw);
     
+    /* The config gates each op (a picker disables them all -> only CANCEL shows). */
     if (file_count > 0) {
         /* COPY works on files AND directories (a directory copies recursively). */
-        if (!is_parent_link) {
+        if (!is_parent_link && g_fb_cfg.allow_copy) {
             g_file_opts[g_file_opts_count] = tr(STR_COPY);
             context_actions[g_file_opts_count++] = ACT_COPY;
         }
 
-        if (can_paste) {
+        if (can_paste && g_fb_cfg.allow_paste) {
             g_file_opts[g_file_opts_count] = tr(STR_PASTE);
             context_actions[g_file_opts_count++] = ACT_PASTE;
         }
 
-        if (!is_parent_link && is_rw) {
+        if (!is_parent_link && is_rw && g_fb_cfg.allow_delete) {
             g_file_opts[g_file_opts_count] = tr(STR_DELETE);
             context_actions[g_file_opts_count++] = ACT_DELETE;
         }
     } else {
-        if (can_paste) {
+        if (can_paste && g_fb_cfg.allow_paste) {
             g_file_opts[g_file_opts_count] = tr(STR_PASTE);
             context_actions[g_file_opts_count++] = ACT_PASTE;
         }
@@ -1075,7 +1056,51 @@ static void open_file_context_menu(void) {
 static void menu_browser_exit(ui_window_t *self) {
     save_tab_state();
     for (int i = 0; i < 2; i++) tab_unmount(&g_tabs[i]);
+    fb_cfg_reset_default();   /* a picker session leaves the browser back at full ops */
 }
+
+/* Open the file browser normally (full file ops). The Tools menu entry calls this. */
+void browser_open(void) {
+    fb_cfg_reset_default();
+    ui_push(&PAGE_BROWSER);
+}
+
+/* Open the browser as a stripped-down PICKER: no file ops, only files matching `ext`
+ * shown (NULL/"" = all), and choosing a file calls on_pick(path,false). Reuses the
+ * whole browser engine; a feature module selects a file/folder this way with its own
+ * callback, leaving the main browser's code (not yet a separate instance) intact. */
+void browser_open_picker(const char *ext, void (*on_pick)(const char *path, bool is_dir, uint32_t size)) {
+    /* Snapshot the (possibly live) main-browser state so the picker can't corrupt it. */
+    save_tab_state();
+    memcpy(g_picker_save.tabs, g_tabs, sizeof(g_tabs));
+    g_picker_save.active_tab = g_active_tab;
+    g_picker_save.cfg = g_fb_cfg;
+    g_picker_saved = true;
+
+    fb_cfg_reset_default();
+    g_fb_cfg.allow_copy = g_fb_cfg.allow_paste = g_fb_cfg.allow_delete = false;
+    g_fb_cfg.pick_mode = true;
+    g_fb_cfg.on_pick = on_pick;
+    if (ext) str_lcpy(g_fb_cfg.ext_filter, sizeof(g_fb_cfg.ext_filter), ext);
+    ui_push(&PAGE_BROWSER);
+}
+
+/* Restore the main browser after a nested picker closed (the picker shares this instance
+ * and its exit unmounts + resets). Re-mounts + re-scans the saved active tab. Call once
+ * after the picker page has popped. No-op if no picker was active. */
+void browser_picker_restore(void) {
+    if (!g_picker_saved) return;
+    g_picker_saved = false;
+    memcpy(g_tabs, g_picker_save.tabs, sizeof(g_tabs));
+    g_active_tab = g_picker_save.active_tab;
+    g_fb_cfg = g_picker_save.cfg;
+    load_tab_state();           /* re-mount + re-scan the restored active tab */
+}
+
+/* The partition currently open in the browser (the picked file's filesystem right after a
+ * pick, before browser_picker_restore). Lets a picker caller learn where to read the file.
+ * Returned opaque (void*) to keep ui.h free of partition.h. */
+const void *browser_active_partition(void) { return active_partition; }
 
 ui_window_t PAGE_BROWSER = {
     .title = "FILE BROWSER",

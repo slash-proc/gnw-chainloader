@@ -47,6 +47,11 @@ typedef struct gui_api {
     void (*error)(const char *message);
     void (*notice)(const char *message);
     void (*context_menu)(const char *title, const char **options, int count, void (*on_select)(int index));
+    /* i18n: reuse the core's ACTIVE translations (id is a string_id_t) for shared words, and
+     * read the active locale code (e.g. "de_DE", "en_US" default) so a module can pick its own
+     * compiled-in translation column for its module-specific strings. APPEND-ONLY. */
+    const char *(*tr)(int id);
+    const char *(*lang_code)(void);
 } gui_api_t;
 
 /* The core's GUI-services vtable (filled with the RTL-aware gui_* / ui_show_* fns). */

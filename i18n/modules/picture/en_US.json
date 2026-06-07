@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Picture Viewer",
+  "MS_LOADING": "Loading...",
+  "MS_CANCEL": "Press B to cancel",
+  "MS_ERR_OPEN": "Cannot open image.",
+  "MS_ERR_DECODE": "Unsupported or broken image.",
+  "MS_EMPTY": "No images in this folder.",
+  "MS_HELP_PICK": "Open an image from the file browser.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Prev/Next  GAME Zoom  {BTN_B} Quit  {BTN_A} Full"
+}

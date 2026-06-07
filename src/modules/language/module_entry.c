@@ -27,12 +27,13 @@ static const lang_host_t *g_host;
 
 /* --- forwarders: lang_mgr.c / font_ext.c call these by name --------------- */
 int vfs_read_file(const char *p, void *d, uint32_t m, uint32_t *o) { return g_host->read_file(p, d, m, o); }
-int vfs_read_lang_lfs(const char *p, void *d, uint32_t m, uint32_t *o, uint16_t a) { return g_host->read_lang_lfs(p, d, m, o, a); }
+int vfs_lfs_read(const char *p, void *d, uint32_t m, uint32_t *o) { return g_host->lfs_read(p, d, m, o); }
+int vfs_map_file(const char *p, uint32_t *a, uint32_t *s) { return g_host->map_file(p, a, s); }
 uint32_t vfs_lfs_lang_version(const char *p, uint16_t a) { return g_host->lfs_lang_version(p, a); }
 int vfs_lfs_free_kb(void) { return g_host->lfs_free_kb(); }
 int vfs_lfs_write_file(const char *p, const void *d, uint32_t l) { return g_host->lfs_write_file(p, d, l); }
 int vfs_lfs_has(const char *p) { return g_host->lfs_has(p); }
-void vfs_lfs_enum_langs(uint16_t a, void (*cb)(const char *, const char *, const char *)) { g_host->lfs_enum_langs(a, cb); }
+void vfs_lfs_enum_dir(const char *d, void (*cb)(const char *)) { g_host->lfs_enum_dir(d, cb); }
 int vfs_sd_dir_exists(const char *d) { return g_host->sd_dir_exists(d); }
 int vfs_sd_list_langs(char *n, int s, int m) { return g_host->sd_list_langs(n, s, m); }
 bool vfs_is_fat_rw_loaded(void) { return g_host->is_fat_rw_loaded(); }
@@ -43,6 +44,10 @@ partition_info_t *partition_get_info(int i) { return g_host->partition_info(i); 
 bool partition_is_sd(const partition_info_t *p) { return g_host->partition_is_sd(p); }
 void strings_set_active(const char *const *t) { g_host->strings_set_active(t); }
 void gui_set_ext_glyph(gui_ext_glyph_fn fn) { g_host->set_ext_glyph(fn); }
+int vfs_open_stream(vfs_stream_t *s, const char *p) { return g_host->stream_open(s, p); }
+int vfs_stream_read(vfs_stream_t *s, void *b, uint32_t n) { return g_host->stream_read(s, b, n); }
+int vfs_stream_seek(vfs_stream_t *s, uint32_t o) { return g_host->stream_seek(s, o); }
+void vfs_stream_close(vfs_stream_t *s) { g_host->stream_close(s); }
 
 /* --- entry: wire the host, build the language list + apply persisted, export -- */
 void init_module(const lang_host_t *host, lang_api_t *out) {

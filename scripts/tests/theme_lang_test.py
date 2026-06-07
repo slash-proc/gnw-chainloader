@@ -12,7 +12,8 @@ works no matter the random state the device was left in.
 
   python3 scripts/tests/theme_lang_test.py
 
-Leaves the device on German + the DEFAULT theme.
+SWD-authoritative (ui_theme_slot + detect_language), so it is language-agnostic;
+it records the starting language + theme and RESTORES them at the end.
 """
 import sys
 from pathlib import Path
@@ -20,11 +21,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import harness as h
 from common import i18n_strings as i18n
-from common import ocrnav
+from common import observe
 from common import remote_input as ri
 
 MAIN_ITEMS, MM_SETTINGS = 4, 2
-SET_THEME, SET_LANGUAGE, SET_COUNT = 0, 1, 4
+# Settings list order (menu.c SET_IDX_*): LANGUAGE=0, THEME=1, FASTBOOT=2, then
+# spliced feature entries, RESET last. (These were previously swapped, so set_theme
+# drove the Language row and vice-versa.) SET_COUNT is a fallback; _set_count reads
+# the live num_items (robust to feature modules adding rows).
+SET_LANGUAGE, SET_THEME, SET_COUNT = 0, 1, 4
 THEME_DEFAULT, THEME_FALLBACK = 0, 1
 
 
@@ -33,14 +38,9 @@ def theme_slot(be):
 
 
 def ensure_main(dev, tries=8):
-    """Recognize the screen and back out to the main menu (OCR confirms the
-    'GNW CHAINLOADER' header, which is literal in every language)."""
-    h.wake(dev); h.settle(0.3)
-    for _ in range(tries):
-        if ocrnav.shot(dev).has("GNW CHAINLOADER"):
-            return True
-        dev.button_press([ri.BTN_B]); h.settle(0.25)
-    return False
+    """Back out to the main menu. SWD-driven (g_stack_ptr == 0) rather than the
+    rigid OCR header match, which is unreliable on dense real frames."""
+    return h.go_home(dev)
 
 
 def open_settings(dev):
@@ -49,25 +49,34 @@ def open_settings(dev):
     dev.button_press([ri.BTN_A]); h.settle(0.4)
 
 
-def set_theme(dev, slot, name, max_cycles=10):
-    """Closed-loop to the THEME row, then cycle until ui_theme_slot == slot;
-    confirm the value '< NAME >' is on screen with OCR."""
-    h.navigate_to(dev, SET_THEME, SET_COUNT, "g_list_settings")
+def _set_count(dev):
+    """Live item count of the Settings list (robust to feature modules splicing in
+    extra rows, which a hardcoded SET_COUNT misses)."""
+    return observe.menu_count(dev.backend, "g_list_settings") or SET_COUNT
+
+
+def set_theme(dev, slot, max_cycles=10):
+    """Closed-loop to the THEME row, then cycle until ui_theme_slot == slot.
+    SWD-authoritative (ui_theme_slot) and therefore language-agnostic: no OCR of
+    the theme name, which is translated into the active language."""
+    h.navigate_to(dev, SET_THEME, _set_count(dev), "g_list_settings")
     for _ in range(max_cycles + 1):
         if theme_slot(dev.backend) == slot:
-            return ocrnav.shot(dev).has(f"< {name} >")
+            return True
         dev.button_press([ri.BTN_RIGHT]); h.settle(0.4)
     return False
 
 
-def set_language(dev, code, endonym, max_cycles=20):
-    """Closed-loop to the LANGUAGE row, then cycle until the active code == code;
-    confirm the endonym (e.g. 'Deutsch') is on screen with OCR."""
-    h.navigate_to(dev, SET_LANGUAGE, SET_COUNT, "g_list_settings")
+def set_language(dev, code, max_cycles=22):
+    """Closed-loop to the LANGUAGE row, then cycle until the active code == code.
+    Uses the FAST ASCII '(code)' suffix per step (full detect_language per step is
+    too slow across ~19 languages); the suffix is the selector's own ground truth."""
+    h.navigate_to(dev, SET_LANGUAGE, _set_count(dev), "g_list_settings")
     for _ in range(max_cycles + 1):
-        if i18n.detect_language(dev, wake=False)[0] == code:
-            return ocrnav.shot(dev).has(endonym)
-        dev.button_press([ri.BTN_RIGHT]); h.settle(0.4)
+        if i18n.active_code_suffix(dev) == code:    # multi-frame read, redraw-robust
+            return True
+        dev.button_press([ri.BTN_RIGHT])
+        h.settle(0.5)          # changing language reloads a pack/font; let it render
     return False
 
 
@@ -75,36 +84,37 @@ def main():
     fails = 0
     with ri.session() as dev:
         be = dev.backend
-        print(f"recognized start: language={i18n.detect_language(dev)[0]!r}  theme_slot={theme_slot(be)}")
+        # Record the starting state so we can restore it (the device is shared).
+        orig_lang = i18n.detect_language(dev)[0]
+        orig_theme = theme_slot(be)
+        print(f"recognized start: language={orig_lang!r}  theme_slot={orig_theme}")
 
-        if ensure_main(dev):
-            print("  PASS  recognized + reached the main menu (from wherever it was)")
-        else:
-            print("  FAIL  could not reach the main menu"); fails += 1
+        def step(ok, msg):
+            nonlocal fails
+            print(("  PASS  " if ok else "  FAIL  ") + msg)
+            if not ok:
+                fails += 1
 
+        step(ensure_main(dev), "reached the main menu (from wherever it was)")
         open_settings(dev)
+        step(set_theme(dev, THEME_FALLBACK), "theme -> FALLBACK (ui_theme_slot)")
+        step(set_language(dev, "de_DE"), "language -> de_DE (detect_language)")
+        step(set_theme(dev, THEME_DEFAULT), "theme -> DEFAULT")
+        # Verify from the MAIN menu: detect_language is reliable there (Settings rows
+        # read as "label: value", which defeats the exact-row language ranking).
+        ensure_main(dev)
+        step(i18n.detect_language(dev)[0] == "de_DE" and theme_slot(be) == THEME_DEFAULT,
+             "changes applied: German + DEFAULT theme")
 
-        if set_theme(dev, THEME_FALLBACK, "FALLBACK"):
-            print("  PASS  theme -> FALLBACK")
-        else:
-            print("  FAIL  theme -> FALLBACK"); fails += 1
-
-        if set_language(dev, "de_DE", "Deutsch"):
-            print("  PASS  language -> German (Deutsch)")
-        else:
-            print("  FAIL  language -> German"); fails += 1
-
-        if set_theme(dev, THEME_DEFAULT, "DEFAULT"):
-            print("  PASS  theme -> DEFAULT")
-        else:
-            print("  FAIL  theme -> DEFAULT"); fails += 1
-
+        # Restore the original language + theme, leaving the device as found.
+        open_settings(dev)
+        set_language(dev, orig_lang)
+        set_theme(dev, orig_theme)
+        ensure_main(dev)
         end_lang, end_theme = i18n.detect_language(dev)[0], theme_slot(be)
-        print(f"final: language={end_lang!r}  theme_slot={end_theme}")
-        if end_lang == "de_DE" and end_theme == THEME_DEFAULT:
-            print("  PASS  final state: German + DEFAULT theme")
-        else:
-            print("  FAIL  final state wrong"); fails += 1
+        print(f"restored: language={end_lang!r}  theme_slot={end_theme}")
+        step(end_lang == orig_lang and end_theme == orig_theme,
+             f"restored original state ({orig_lang} + theme {orig_theme})")
 
     print("RESULT:", "ALL PASS" if fails == 0 else f"{fails} FAILED")
     return 1 if fails else 0

@@ -64,12 +64,52 @@ bool gui_glyph(uint32_t cp, gui_glyph_info_t *gi) {
     return true;
 }
 
+/* Icon shortcodes: a "{NAME}" in any drawn string expands to the mapped codepoint
+ * (a Fusion Pixel controller/logo glyph baked into latin.fnt). Source of record:
+ * i18n/glyphs_selected.txt (cook_font bakes the same codepoints into latin.fnt).
+ * An unknown or malformed "{...}" is left literal, so arbitrary text and filenames
+ * are never altered. Glyphs come from the always-resident latin base font, so tokens
+ * render under any active language. */
+static const struct { const char *name; uint32_t cp; } g_icon_tokens[] = {
+    { "BTN_UP", 0xE001 }, { "BTN_DOWN", 0xE002 }, { "BTN_LEFT", 0xE003 },
+    { "BTN_RIGHT", 0xE004 }, { "BTN_UPDOWN", 0xE005 }, { "BTN_LEFTRIGHT", 0xE006 },
+    { "BTN_A", 0xE050 }, { "BTN_B", 0xE051 }, { "KEYBOARD", 0xE0CB },
+    { "INSTAGRAM", 0xF8EC }, { "TWITCH", 0xF8ED }, { "YOUTUBE", 0xF8EF },
+    { "TWITTER", 0xF8F1 }, { "TWITTER_DUMB", 0xF8F2 }, { "FACEBOOK", 0xF8F4 },
+    { "DISCORD", 0xF8F5 }, { "ANDROID", 0xF8F7 }, { "XBOX", 0xF8F8 },
+    { "PLAYSTATION", 0xF8F9 }, { "STEAM", 0xF8FB }, { "WINDOWS", 0xF8FD },
+    { "LINUX", 0xF8FE }, { "MAC", 0xF8FF }, { "SWITCH", 0xF8FA },
+};
+
+static uint32_t icon_lookup(const char *name, int len) {
+    for (unsigned i = 0; i < sizeof(g_icon_tokens) / sizeof(g_icon_tokens[0]); i++) {
+        const char *n = g_icon_tokens[i].name;
+        int j = 0;
+        while (j < len && n[j] && n[j] == name[j]) j++;
+        if (j == len && n[j] == '\0') return g_icon_tokens[i].cp;
+    }
+    return 0;
+}
+
+uint32_t gui_text_next(const uint8_t **p) {
+    const uint8_t *s = *p;
+    if (*s == '{') {
+        int n = 0;
+        while (s[1 + n] && s[1 + n] != '}' && n < 31) n++;
+        if (n > 0 && s[1 + n] == '}') {
+            uint32_t cp = icon_lookup((const char *)(s + 1), n);
+            if (cp) { *p = s + n + 2; return cp; }
+        }
+    }
+    return gui_utf8_next(p);
+}
+
 int gui_text_width(const char *str) {
     int w = 0;
     const uint8_t *u = (const uint8_t *)str;
     while (*u) {
         gui_glyph_info_t g;
-        gui_glyph(gui_utf8_next(&u), &g);
+        gui_glyph(gui_text_next(&u), &g);
         w += g.w;
     }
     return w;

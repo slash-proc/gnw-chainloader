@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "Visionneuse",
+  "MS_LOADING": "Chargement...",
+  "MS_CANCEL": "Appuyez sur B pour annuler",
+  "MS_ERR_OPEN": "Impossible d'ouvrir l'image.",
+  "MS_ERR_DECODE": "Image non prise en charge ou corrompue.",
+  "MS_EMPTY": "Aucune image dans ce dossier.",
+  "MS_HELP_PICK": "Ouvrir une image depuis l'explorateur.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} Préc/Suiv  GAME Zoom  {BTN_B} Quitter  {BTN_A} Plein"
+}

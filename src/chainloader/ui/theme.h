@@ -21,7 +21,9 @@
  * Selector order shown to the user: DEFAULT -> <modules> -> FALLBACK.
  */
 
-typedef struct { uint16_t bg, fg, accent, border, footer; } theme_colors_t;
+/* header = the header-bar fill. 0 falls back to footer, so a theme that omits it
+ * keeps the header matching its footer; Yoshi sets it to its sky-blue cloud bg. */
+typedef struct { uint16_t bg, fg, accent, border, footer, header; } theme_colors_t;
 
 typedef struct theme_driver {
     const char *name;          /* selector label (uppercase; GUI font is 0x20-0x5A) */

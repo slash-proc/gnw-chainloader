@@ -32,17 +32,24 @@ SECTIONS
     . = ALIGN(4);
   } :load
 
-  .data :
-  {
-    . = ALIGN(4);
-    *(.data .data*)
-    . = ALIGN(4);
-  } :load
+  . = ALIGN(4);
+  __data_start = .;   /* boundary: .text/.rodata above take the (flash/XIP) text base;
+                         .data/.got/.bss below take the RAM data base. See loader.c. */
 
+  /* .got FIRST in the data region, so it sits exactly at __data_start (== data_offset). The GOT
+   * base is then data_base, which the loader already computes -- an r9-pic (-msingle-pic-base)
+   * module just gets r9 = data_base, no separate got_offset field needed. */
   .got :
   {
     . = ALIGN(4);
     *(.got.plt) *(.got)
+    . = ALIGN(4);
+  } :load
+
+  .data :
+  {
+    . = ALIGN(4);
+    *(.data .data*)
     . = ALIGN(4);
   } :load
 
@@ -76,3 +83,5 @@ _module_reloc_offset = __rel_start;
 _module_reloc_count  = (__rel_end - __rel_start) / 8;   /* sizeof(Elf32_Rel) == 8 */
 _module_bss_offset   = __bss_start;
 _module_bss_size     = __bss_end - __bss_start;
+_module_data_offset  = __data_start;   /* relocs below this offset resolve against text_base,
+                                          at/above against data_base (two-base loader, Stage 3b). */

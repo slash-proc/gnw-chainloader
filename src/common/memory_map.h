@@ -26,8 +26,10 @@
 #define ZELDA_EXT_BLOCK_SIZE           (4U * 1024U * 1024U)  /* fixed size (patcher output) */
 #define DEFAULT_MARIO_EXT_BLOCK_OFFSET 0x00400000UL  /* default Mario asset block start  */
 #define MARIO_EXT_BLOCK_SIZE           (1U * 1024U * 1024U)  /* fixed size (patcher output) */
-#define MARIO_SPI_OFFSET               0x007C0000UL  /* default Mario OFW backup offset  */
-#define ZELDA_SPI_OFFSET               0x007E0000UL  /* default Zelda OFW backup offset  */
+/* OFW backups, moved up to sit contiguously right behind the asset blocks (Stage 3 reslice).
+ * Flash order: Zelda backup then Mario backup, each OFW_INTERNAL_SIZE (128 KiB). */
+#define ZELDA_SPI_OFFSET               0x00500000UL  /* Zelda OFW backup: right after the Mario asset block */
+#define MARIO_SPI_OFFSET               0x00520000UL  /* Mario OFW backup: right after the Zelda backup */
 
 /* Fast-path probe hints for the Retro-Go LittleFS (the chainloader's
  * themes/config module source), used at boot before the exhaustive partition
@@ -41,10 +43,21 @@
  * partition scanner back-computes the real start from there. The two start
  * offsets below are kept only as fallbacks for a hypothetical NON-inverted image
  * at the standard patcher layouts (DESIGN.md §2): SD-card variant (no FrogFS) at
- * 8 MiB, full 64 MB layout (after FrogFS) at 56 MiB. */
+ * 10 MiB (after the FAT module store), full 64 MB layout (after FrogFS) at 56 MiB. */
 #define MODULE_LFS_END_WINDOW          0x00010000UL  /* 64 KiB end-of-flash window (inverted superblock) */
-#define MODULE_LFS_OFFSET_SD           0x00800000UL  /* 8 MiB:  SD-card variant start (non-inverted fallback) */
+#define MODULE_LFS_OFFSET_SD           0x00A00000UL  /* 10 MiB: SD-card variant start (after the FAT store); == RG_EXTFLASH_OFFSET */
 #define MODULE_LFS_OFFSET_FLASH        0x03800000UL  /* 56 MiB: full 64 MB layout start (non-inverted fallback) */
+
+/* --- Module store FAT partition (Stage 3 of the tiered module-memory design) ---
+ * A FAT partition holding loadable module .bin files and the full RW filesystem drivers
+ * (/fs/fat.bin, /fs/lfs.bin), and once the split-segment loader lands, XIP module code executed
+ * in place from this mapped region. The SD-variant external flash is fully contiguous:
+ *   Zelda assets | Mario assets | Zelda backup | Mario backup | FAT store | LittleFS
+ * The store spans from just after the two OFW backups to the LittleFS (MODULE_LFS_OFFSET_SD,
+ * 10 MiB == RG_EXTFLASH_OFFSET), so ~4.75 MiB. It is OPTIONAL: the chainloader and the installer
+ * fall back to LittleFS when no FAT store is present. See docs/memory-architecture.md. */
+#define MODULE_FAT_OFFSET              0x00540000UL  /* right after the two 128 KiB OFW backups */
+#define MODULE_FAT_SIZE                (MODULE_LFS_OFFSET_SD - MODULE_FAT_OFFSET)  /* ~4.75 MiB, up to the LittleFS */
 
 /* --- SRAM magic cells --- */
 /* Survive the system reset triggered by a bank swap, so the chainloader can
@@ -86,6 +99,16 @@
 #define FASTCAP_RESET_FLAG   0x2001FF08UL  /* u32: host writes 1 to force a fresh keyframe; device clears on next call */
 #define FASTCAP_QUALITY      0x2001FF0CUL  /* u32: host writes JPEG quality 1..100 (0 = device default); read at reinit */
 #define FASTCAP_MODE         0x2001FF14UL  /* u32: host writes 0 = async/live, 1 = sync/frame-perfect; read at reinit */
+
+/* --- D2 AHB-SRAM2 borrowable scratch (0x30010000, 64 KB) ---
+ * Idle while the launcher menu runs: the OFW patch only touches this bank during an OFW boot, and
+ * fastcap only touches D2 AHB-SRAM1 (0x30000000) during a live SWD capture. A transient feature
+ * module (only one runs at a time) borrows it via the feature host's scratch_get() for a big
+ * CPU-only working buffer (e.g. the PNG inflate window), keeping that buffer out of the AXI module
+ * pool. NOT DMA-reachable: SAI1/DMA1 are AXI-connected and cannot reach the D2 domain, so this is
+ * CPU access only (audio DMA buffers must stay in AXI). The D2 SRAM clock is enabled at SystemInit. */
+#define D2_SCRATCH_BASE  0x30010000UL
+#define D2_SCRATCH_SIZE  (64U * 1024U)
 
 /* The RG magic cell. Retro-Go's persistent boot_magic lives here at the very start
    of DTCM (it is the first .persistent var in Retro-Go's link map). A surviving

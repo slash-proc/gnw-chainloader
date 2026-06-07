@@ -146,6 +146,27 @@ typedef enum {
                               * formatting reads via tr() instead of hardcoding "." -- no
                               * grouping separator, we never format large numbers. */
 
+    /* --- partition-viewer detail labels (translated at draw time; the two "%d"
+     * labels take a count via str_fmt1_int, the rest ignore it) --- */
+    STR_LFS_BLOCKS,          /* "Blocks: %d" (LittleFS block count) */
+    STR_FROG_ENTRIES,        /* "Entries: %d" (FrogFS entry count) */
+    STR_DETAIL_EMPTY,        /* "Empty" (a free-space region) */
+    STR_DETAIL_FS,           /* "Filesystem" (a raw FAT volume) */
+    STR_DETAIL_ASSETS,       /* "Assets" (an OFW asset blob) */
+    STR_DETAIL_OFW_BACKUP,   /* "OFW Backup" (stock-firmware backup copy) */
+    STR_DETAIL_APP_BIN,      /* "APP BIN" (an executable app image) */
+    STR_DETAIL_CHAINLOADER,  /* "GNW-Chainloader" (this bootloader; a brand, usually adopted as-is) */
+    STR_TYPE_FIRMWARE,       /* "Firmware" (generic firmware, shown as the target name) */
+
+    /* --- partition-scan phase banner (shown on the boot scan screen) --- */
+    STR_PHASE_MODULES,       /* "Modules" */
+    STR_PHASE_INT_FLASH,     /* "Internal Flash" */
+    STR_PHASE_EXT_FLASH,     /* "External Flash" */
+
+    /* --- file browser: picker-mode footer + SD sentinel address --- */
+    STR_FOOTER_PICKER,       /* "PAUSE: ADD FOLDER   A: PICK" (file-picker mode) */
+    STR_SD_ADDR,             /* "SD" (synthetic SD partition has no real address) */
+
     STR_COUNT
 } string_id_t;
 

@@ -8,6 +8,7 @@
 #include "menu.h"
 #include "ui_list.h"
 #include "strings.h"
+#include "i18n.h"
 #include "theme.h"
 #include "system/gui_api.h"
 #include "system/bench.h"
@@ -16,6 +17,7 @@
 
 #define MAX_WINDOWS 8
 #define UI_IDLE_TIMEOUT_MS 30000   /* main menu fades to ambient mode after this idle */
+#define UI_FOOTER_TOP 218          /* top Y of the footer bar (accent line / fill start) */
 
 bool ui_operation_in_progress = false;
 uint8_t ui_theme_slot = THEME_SLOT_DEFAULT;
@@ -33,6 +35,19 @@ static void ui_draw_window_chrome(ui_window_t *win);
 static bool ui_app_active(void) {
     return g_stack_ptr >= 0 && !g_window_stack[g_stack_ptr]->is_modal
            && g_window_stack[g_stack_ptr]->w == 320;
+}
+
+/* Title the HEADER bar shows: the running APP window's title, NOT a pop-up's.
+ * Modal pop-ups (confirm dialogs, context menus) carry their OWN attached box
+ * title via the window chrome; they must not feed the header. So walk down the
+ * stack past any modal windows on top to the parent app window and use ITS
+ * title — opening a dialog over the File Browser keeps the File Browser's
+ * header title showing. Empty stack / all-modal stack yields "". */
+static const char *ui_header_title(void) {
+    for (int i = g_stack_ptr; i >= 0; i--) {
+        if (!g_window_stack[i]->is_modal) return g_window_stack[i]->title;
+    }
+    return "";
 }
 
 void ui_init(void) {
@@ -102,6 +117,7 @@ static void apply_colors(const theme_colors_t *c) {
     gui_accent_color = c->accent;
     gui_border_color = c->border;
     gui_footer_color = c->footer;
+    gui_header_color = c->header ? c->header : c->footer;   /* 0 = match the footer */
 }
 
 void ui_set_theme_slot(uint8_t slot) {
@@ -128,6 +144,14 @@ void ui_update_theme(void) {
     uint8_t slot = (board_console_type == CONSOLE_ZELDA) ? settings_zelda_slot(w)
                  : (board_console_type == CONSOLE_MARIO) ? settings_mario_slot(w)
                  : THEME_SLOT_DEFAULT;
+    /* The Default slot paints the OFW look, which needs the decoded sprite
+     * assets. If those failed to load (missing/corrupt OFW backup), fall back to
+     * the neutral Fallback theme instead of a half-rendered OFW menu. Lives here,
+     * not just in board_load_dynamic_assets, so it survives the re-apply that
+     * theme_modules_init() triggers. */
+    if (slot == THEME_SLOT_DEFAULT && !assets_loaded &&
+        (board_console_type == CONSOLE_MARIO || board_console_type == CONSOLE_ZELDA))
+        slot = THEME_SLOT_FALLBACK;
     /* If a module theme is selected but its module isn't registered yet (this
      * runs early in board_load_dynamic_assets, before theme_modules_init), do NOT
      * paint the OFW default as a placeholder — that is the red flash. Stay black +
@@ -249,6 +273,8 @@ void ui_pop(void) {
     }
 }
 
+int ui_stack_depth(void) { return g_stack_ptr; }
+
 void ui_switch(ui_window_t *win) {
     if (g_stack_ptr >= 0 && g_window_stack[g_stack_ptr]->exit) {
         g_window_stack[g_stack_ptr]->exit(g_window_stack[g_stack_ptr]);
@@ -344,9 +370,9 @@ void ui_draw(void) {
         }
     }
 
-    // Always draw header & footer on top of background / stack windows
-    const char *title = (g_stack_ptr >= 0) ? g_window_stack[g_stack_ptr]->title : "";
-    ui_draw_header(title);
+    // Always draw header & footer on top of background / stack windows. The header
+    // title belongs to the running app window, not a modal pop-up layered on top.
+    ui_draw_header(ui_header_title());
     ui_draw_footer_bar();
 
     gui_refresh();
@@ -365,56 +391,167 @@ void ui_draw_animations(void) {
     theme_draw_background(HAL_GetTick());
 }
 
-void ui_draw_header(const char *title) {
-    bool app_active = ui_app_active();
-    
-    if (app_active || g_stack_ptr < 0) {
-        gui_draw_fill_rect(0, 0, SCREEN_WIDTH, 22, gui_accent_color);
-    }
-    
-    // Draw header divider line
-    gui_draw_rect(0, 22, SCREEN_WIDTH, 1, (app_active || g_stack_ptr < 0) ? COLOR_FG : gui_accent_color);
+/* Graphical 10-segment battery meter: a black-bordered cylinder with a + nub,
+ * drawn entirely from rectangles (no sprite data). Color tracks the charge level;
+ * it flashes near-dead and animates a rising fill while charging. */
+#define BATT_W 23
+#define BATT_H 12
+static void ui_draw_battery_icon(int x, int y, int pct) {
+    const uint16_t black = RGB565(0, 0, 0);
 
-    char batt_str[96];   /* translated; Arabic presentation forms are 3 bytes/char */
+    uint16_t col;
+    if (pct >= 50)      col = COLOR_GREEN;
+    else if (pct >= 30) col = RGB565(0xE6, 0x7E, 0x22);   /* orange */
+    else if (pct >= 15) col = RGB565(0xF1, 0xC4, 0x0F);   /* yellow */
+    else                col = COLOR_RED;
+
+    /* Body outline + the + terminal nub on the right end. */
+    gui_draw_rect(x, y, BATT_W, BATT_H, black);
+    gui_draw_fill_rect(x + BATT_W, y + 4, 2, 4, black);
+
+    int filled = pct / 10;                 /* 0..10 segments, true level */
+    if (filled > 10) filled = 10;
+
+    for (int i = 0; i < filled; i++) {
+        gui_draw_fill_rect(x + 2 + i * 2, y + 2, 1, BATT_H - 4, col);
+    }
+}
+
+/* Tiny lightning bolt (charging indicator), drawn from six 1px rows. Sits left of
+ * the battery so a plugged-in state is obvious even at a full, non-animating charge. */
+#define BOLT_W 4
+#define BOLT_H 6
+static void ui_draw_bolt(int x, int y, uint16_t col) {
+    gui_draw_fill_rect(x + 2, y,     2, 1, col);
+    gui_draw_fill_rect(x + 1, y + 1, 2, 1, col);
+    gui_draw_fill_rect(x,     y + 2, 4, 1, col);   /* crossbar */
+    gui_draw_fill_rect(x + 2, y + 3, 2, 1, col);
+    gui_draw_fill_rect(x + 1, y + 4, 2, 1, col);
+    gui_draw_fill_rect(x,     y + 5, 2, 1, col);
+}
+
+/* RTL mirror of one piece's offset within the header readout cluster: in RTL the
+ * piece is flipped to the opposite end (cluster_w - off - w), in LTR it's unchanged. */
+static int mirror_off(int off, int w, int cluster_w) {
+    return gui_is_rtl() ? cluster_w - off - w : off;
+}
+
+/* Draw the header bar (fill + divider line) and the title + battery/clock cluster.
+ * The bar is always filled (matching the always-filled footer bar, so both ends of the
+ * screen share the same dark backdrop); `solid` only picks the divider color: COLOR_FG
+ * for an app/full-screen page, the gold accent for a floating menu page (mirroring the
+ * footer's accent top line). The single header chrome path: the core's app header and a
+ * feature module's header both render through it. */
+static void ui_draw_header_impl(const char *title, bool solid) {
+    /* Per-window header color: the active window may override the bar fill; 0 means
+     * "use the theme header color" (gui_header_color, which most themes set to their
+     * footer color so both ends match, but Yoshi sets to its sky-blue cloud bg). Gold
+     * accent is kept for borders/dividers/selector, not as a fill behind the title. */
+    uint16_t hdr_color = (g_stack_ptr >= 0 && g_window_stack[g_stack_ptr]->header_color)
+                       ? g_window_stack[g_stack_ptr]->header_color : gui_header_color;
+
+    gui_draw_fill_rect(0, 0, SCREEN_WIDTH, 22, hdr_color);
+
+    // Draw header divider line
+    gui_draw_rect(0, 22, SCREEN_WIDTH, 1, solid ? COLOR_FG : gui_accent_color);
+
     int pct;
     bool charging;
     board_battery_update(&pct, &charging);
-    
+
     char pctstr[12];
     int_to_str(pct, pctstr);                       /* "100" */
-    str_lcat(pctstr, sizeof(pctstr), "%");         /* one LTR run: "100%" */
-    /* Pieces in logical reading order; gui_compose reverses them for RTL so the Arabic
-     * label sits at the right edge with the % to its left, instead of the colon/number
-     * landing in the wrong spots. */
-    const char *batt_pieces[3] = { tr(STR_BATT), pctstr, charging ? tr(STR_CHARGING) : NULL };
-    gui_compose(batt_str, sizeof(batt_str), batt_pieces, 3);
+    str_lcat(pctstr, sizeof(pctstr), "%");         /* "100%" */
+    int pct_w = gui_text_width(pctstr);
 
-    int batt_w = gui_text_width(batt_str);
-    int batt_x = SCREEN_WIDTH - batt_w - 4;
-    int max_w = batt_x - 30;
+    /* Minimal 24h clock: BCD nibbles of RTC->TR straight to ASCII, no division. */
+    uint32_t tr = RTC->TR;
+    char clk[6];
+    clk[0] = '0' + ((tr >> 20) & 3);               /* hours tens  */
+    clk[1] = '0' + ((tr >> 16) & 0xF);             /* hours units */
+    clk[2] = ':';
+    clk[3] = '0' + ((tr >> 12) & 7);               /* mins tens   */
+    clk[4] = '0' + ((tr >>  8) & 0xF);             /* mins units  */
+    clk[5] = 0;
+
+    /* The right-side readout is one cluster, left-to-right: [HH:MM] gap [bolt]
+     * [icon] gap [NN%]. The bolt's slot is ALWAYS reserved so the clock, icon and
+     * % never shift when charging toggles. Anchor the % 20px from the edge (same
+     * margin as the title), then mirror the whole box — and each piece — for RTL. */
+    const int clk_w = 5 * 6;                       /* monospaced "HH:MM", 5 glyphs */
+    const int icon_w = BATT_W + 2;                 /* body + nub */
+    const int gap = 6;
+    const int clk_gap = 9;                         /* roomier split between clock and battery */
+    const int bolt_total = BOLT_W + 3;             /* bolt + 3px gap, always reserved */
+    int cluster_w = clk_w + clk_gap + bolt_total + icon_w + gap + pct_w;
+    int left = SCREEN_WIDTH - cluster_w - 20;
+    int cluster_x = gui_mirror_x(left, cluster_w, 0, SCREEN_WIDTH);
+    int max_w = left - 30;
     if (max_w < 50) max_w = 50;
 
-    /* RTL: title right-aligned, battery on the left (mirror within the full screen). */
+    int clk_off  = mirror_off(0, clk_w, cluster_w);
+    int bolt_off = mirror_off(clk_w + clk_gap, BOLT_W, cluster_w);
+    int icon_off = mirror_off(clk_w + clk_gap + bolt_total, icon_w, cluster_w);
+    int pct_off  = mirror_off(clk_w + clk_gap + bolt_total + icon_w + gap, pct_w, cluster_w);
+
     gui_draw_text_aligned(gui_mirror_x(20, max_w, 0, SCREEN_WIDTH), 7, max_w, title, COLOR_FG, true, 0);
-    gui_draw_text(gui_mirror_x(batt_x, batt_w, 0, SCREEN_WIDTH), 7, batt_str, COLOR_FG);
+    gui_draw_text(cluster_x + clk_off, 7, clk, COLOR_FG);
+    if (charging) ui_draw_bolt(cluster_x + bolt_off, 8, COLOR_FG);
+    ui_draw_battery_icon(cluster_x + icon_off, 5, pct);
+    gui_draw_text(cluster_x + pct_off, 7, pctstr, COLOR_FG);
+}
+
+void ui_draw_header(const char *title) {
+    /* The solid filled bar is drawn for a full-width app page (or an empty stack);
+     * a floating page over the animated background gets the unfilled, accent-divider
+     * look. */
+    ui_draw_header_impl(title, ui_app_active() || g_stack_ptr < 0);
+}
+
+/* Force the solid (filled) header — a feature module runs over a narrow launching
+ * menu (ui_app_active() is false there), but its full-screen chrome needs the filled
+ * bar, so it routes through this rather than re-implementing the fill. */
+void ui_draw_header_solid(const char *title) {
+    ui_draw_header_impl(title, true);
+}
+
+/* The themed footer bar (accent line at UI_FOOTER_TOP + footer-color fill below) plus
+ * an optional centered hint legend at y=225. Single shared chrome path: the core's
+ * non-app footer renders through it (NULL hint, then layers theme decoration on top),
+ * and a feature module's footer renders through it with its hint. */
+void ui_draw_footer_chrome(const char *hint) {
+    gui_draw_rect(0, UI_FOOTER_TOP, SCREEN_WIDTH, 1, gui_accent_color);
+    gui_draw_fill_rect(0, UI_FOOTER_TOP + 1, SCREEN_WIDTH, 21, COLOR_FOOTER);
+    if (hint && hint[0]) {
+        int w = gui_text_width(hint);
+        gui_draw_text((SCREEN_WIDTH - w) / 2, 225, hint, COLOR_FG);
+    }
 }
 
 static void ui_draw_footer_bar(void) {
     bool app_active = ui_app_active();
     bool show_footer = (g_stack_ptr >= 0) ? g_window_stack[g_stack_ptr]->show_footer : false;
-    
+
     if (app_active) {
         if (show_footer) {
-            gui_draw_fill_rect(0, 218, SCREEN_WIDTH, 22, COLOR_FOOTER);
-            gui_draw_rect(0, 218, SCREEN_WIDTH, 1, COLOR_FG);
+            gui_draw_fill_rect(0, UI_FOOTER_TOP, SCREEN_WIDTH, 22, COLOR_FOOTER);
+            gui_draw_rect(0, UI_FOOTER_TOP, SCREEN_WIDTH, 1, COLOR_FG);
         }
     } else {
         /* Solid themed footer bar (accent line + footer color) on every screen... */
-        gui_draw_rect(0, 218, SCREEN_WIDTH, 1, gui_accent_color);
-        gui_draw_fill_rect(0, 219, SCREEN_WIDTH, 21, COLOR_FOOTER);
+        ui_draw_footer_chrome(NULL);
         /* ...then a module theme paints decoration over it (e.g. brick + Yoshi). */
         theme_draw_footer(HAL_GetTick());
     }
+}
+
+/* Top Y of the footer bar when the active full-width app window shows one, else 0.
+ * The split list divider uses this to stop at the footer line. Only the app-active
+ * footer (a list page with show_footer) clips the divider; a non-app overlay footer
+ * isn't part of a split-list page. */
+int ui_footer_top(void) {
+    bool show_footer = (g_stack_ptr >= 0) ? g_window_stack[g_stack_ptr]->show_footer : false;
+    return (ui_app_active() && show_footer) ? UI_FOOTER_TOP : 0;
 }
 
 static void ui_draw_window_chrome(ui_window_t *win) {
@@ -448,13 +585,28 @@ void ui_draw_scan_progress(void) {
 
     // Draw scanning UI in the workspace area
     gui_draw_text(20, 40, tr(STR_SCANNING), COLOR_FG);
-    gui_draw_text(20, 70, partition_current_phase, COLOR_FG);
+    gui_draw_text(20, 70, tr(partition_current_phase), COLOR_FG);
     gui_draw_progress_bar(20, 110, 280, 18, pct, COLOR_BORDER, COLOR_BORDER);
     char pct_buf[8];
     int_to_str(pct, pct_buf);
     strcat(pct_buf, "%");
     gui_draw_text(148, 135, pct_buf, COLOR_FG);
     ui_draw_footer(tr(STR_FOOTER_CANCEL));
+}
+
+/* Shared geometry/flags for the centered 240x100 modal dialogs (confirm + message):
+ * fixed box, modal, no footer, no idle-hide, no exit hook. The differing draw/update
+ * callbacks stay at each call site. */
+static void init_modal_window(ui_window_t *w, const char *title) {
+    w->title = title;
+    w->x = 40;
+    w->y = 70;
+    w->w = 240;
+    w->h = 100;
+    w->is_modal = 1;
+    w->show_footer = 0;
+    w->allow_idle_hide = 0;
+    w->exit = NULL;
 }
 
 static const char *g_confirm_msg = NULL;
@@ -479,18 +631,10 @@ void ui_show_confirm(const char *message, void (*on_confirm)(void)) {
     g_confirm_msg = message;
     g_confirm_callback = on_confirm;
     
-    g_confirm_win.title = tr(STR_CONFIRM);
-    g_confirm_win.x = 40;
-    g_confirm_win.y = 70;
-    g_confirm_win.w = 240;
-    g_confirm_win.h = 100;
-    g_confirm_win.is_modal = 1;
-    g_confirm_win.show_footer = 0;
-    g_confirm_win.allow_idle_hide = 0;
+    init_modal_window(&g_confirm_win, tr(STR_CONFIRM));
     g_confirm_win.draw_content = confirm_draw;
     g_confirm_win.update_content = confirm_update;
-    g_confirm_win.exit = NULL;
-    
+
     ui_push(&g_confirm_win);
 }
 
@@ -515,17 +659,9 @@ static void error_update(ui_window_t *self) {
 static void show_message_modal(const char *title, const char *message) {
     g_error_msg = message;
 
-    g_error_win.title = title;
-    g_error_win.x = 40;
-    g_error_win.y = 70;
-    g_error_win.w = 240;
-    g_error_win.h = 100;
-    g_error_win.is_modal = 1;
-    g_error_win.show_footer = 0;
-    g_error_win.allow_idle_hide = 0;
+    init_modal_window(&g_error_win, title);
     g_error_win.draw_content = error_draw;
     g_error_win.update_content = error_update;
-    g_error_win.exit = NULL;
 
     ui_push(&g_error_win);
 }
@@ -544,6 +680,12 @@ void ui_show_notice(const char *message) {
 #include "system/mod_ui.h"
 static const mod_ui_t g_mod_ui = { ui_show_confirm, ui_show_error };
 const mod_ui_t *mod_ui(void) { return &g_mod_ui; }
+
+/* i18n seam for modules (gui_api): reuse the core's active translations + report the active
+ * locale code so a module can localize via shared core words AND pick its own compiled-in
+ * translation column. */
+static const char *gui_api_tr(int id) { return tr((string_id_t)id); }
+static const char *gui_api_lang_code(void) { return i18n_code(i18n_current()); }
 
 /* GUI-services vtable handed to PIE modules (see system/gui_api.h): the core's
  * RTL-aware drawing primitives + modals, so a module renders in the core's style with
@@ -573,6 +715,8 @@ static const gui_api_t g_gui_api = {
     .error             = ui_show_error,
     .notice            = ui_show_notice,
     .context_menu      = ui_show_context_menu,
+    .tr                = gui_api_tr,
+    .lang_code         = gui_api_lang_code,
 };
 const gui_api_t *gui_api(void) { return &g_gui_api; }
 

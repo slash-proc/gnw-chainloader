@@ -49,6 +49,7 @@ uint16_t gui_fg_color = RGB565(0xD0, 0xD4, 0xD8);
 uint16_t gui_accent_color = RGB565(0x00, 0xA0, 0xA0);
 uint16_t gui_border_color = RGB565(0xD0, 0xD4, 0xD8);
 uint16_t gui_footer_color = RGB565(0x14, 0x16, 0x1A);
+uint16_t gui_header_color = RGB565(0x14, 0x16, 0x1A);   /* header bar fill (see theme_colors_t.header) */
 /* gui_rtl + gui_mirror_x live in gui_text.c (HAL-free, host-testable). */
 
 static void gui_spi2_init(void) {
@@ -349,12 +350,16 @@ void gui_draw_text_marquee(int x, int y, int max_w, const char *str, uint16_t co
         } else {
             offset_x = scroll_dist;
         }
+        /* RTL: scroll the other way — begin showing the RIGHT edge (where right-to-left
+         * reading starts) and reveal leftward toward the end. Mirroring the offset keeps
+         * the same dwell/scroll timing; LTR is untouched. */
+        if (gui_rtl) offset_x = scroll_dist - offset_x;
     }
 
     int cursor_x = x - offset_x;
     const uint8_t *u = (const uint8_t *)str;
     while (*u) {
-        uint32_t cp = gui_utf8_next(&u);
+        uint32_t cp = gui_text_next(&u);
         gui_glyph_info_t g;
         gui_glyph(cp, &g);
         if (cursor_x + g.w > x && cursor_x < x + max_w) {

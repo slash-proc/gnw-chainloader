@@ -1,0 +1,10 @@
+{
+  "MS_TITLE": "사진 뷰어",
+  "MS_LOADING": "불러오는 중...",
+  "MS_CANCEL": "B를 눌러 취소",
+  "MS_ERR_OPEN": "이미지를 열 수 없습니다.",
+  "MS_ERR_DECODE": "지원되지 않거나 손상된 이미지입니다.",
+  "MS_EMPTY": "이 폴더에 이미지가 없습니다.",
+  "MS_HELP_PICK": "파일 브라우저에서 이미지를 엽니다.",
+  "MS_FOOTER": "{BTN_LEFTRIGHT} 이전/다음  GAME 확대  {BTN_B} 종료  {BTN_A} 전체화면"
+}

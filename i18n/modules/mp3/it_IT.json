@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "Lettore MP3",
+  "MS_PLAYLIST": "Playlist",
+  "MS_PREV": "Prec.",
+  "MS_SEEK": "Scorri",
+  "MS_PLAY": "Riprod.",
+  "MS_PAUSE": "Pausa",
+  "MS_NEXT": "Succ.",
+  "MS_LIST": "Lista",
+  "MS_ADD": "Aggiungi",
+  "MS_REMOVE": "Rimuovi",
+  "MS_EMPTY": "La playlist è vuota.",
+  "MS_HELP_ADD": "Apri la playlist e aggiungi brani.",
+  "MS_STOPPED": "Fermato.",
+  "MS_HELP_PLAY": "Premi Play o apri la playlist.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Scorri  {BTN_B} Annulla  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Scegli  {BTN_B} Esci  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Brano  {BTN_LEFTRIGHT} Azione  {BTN_B} Chiudi  {BTN_A} Scegli"
+}

@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "Αναπαρ. MP3",
+  "MS_PLAYLIST": "Λίστα",
+  "MS_PREV": "Προηγ.",
+  "MS_SEEK": "Αναζήτ.",
+  "MS_PLAY": "Έναρξη",
+  "MS_PAUSE": "Παύση",
+  "MS_NEXT": "Επόμ.",
+  "MS_LIST": "Λίστα",
+  "MS_ADD": "Προσθήκη",
+  "MS_REMOVE": "Αφαίρεση",
+  "MS_EMPTY": "Η λίστα είναι κενή.",
+  "MS_HELP_ADD": "Ανοίξτε τη λίστα και προσθέστε τραγούδια.",
+  "MS_STOPPED": "Διακόπηκε.",
+  "MS_HELP_PLAY": "Πατήστε Έναρξη ή ανοίξτε τη λίστα.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Αναζήτ.  {BTN_B} Άκυρο  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Επιλογή  {BTN_B} Έξοδος  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Τραγούδι  {BTN_LEFTRIGHT} Ενέργεια  {BTN_B} Κλείσιμο  {BTN_A} Επιλογή"
+}

@@ -187,6 +187,10 @@ static int lfs_vfs_write(void *file_ctx, const void *buf, size_t len, size_t *wr
     return 0;
 }
 
+static int lfs_vfs_seek(void *file_ctx, uint32_t offset) {
+    return lfs_file_seek(&lfs, (lfs_file_t *)file_ctx, (lfs_off_t)offset, LFS_SEEK_SET) >= 0 ? 0 : -1;
+}
+
 static int lfs_vfs_unlink(const char *path) {
     return lfs_remove(&lfs, path);
 }
@@ -221,4 +225,5 @@ __attribute__((section(".text.init_module"))) void init_module(vfs_driver_t *drv
     drv->unlink = lfs_vfs_unlink;
     drv->mkdir = lfs_vfs_mkdir;
     drv->statfs = lfs_vfs_statfs;
+    drv->seek = lfs_vfs_seek;
 }

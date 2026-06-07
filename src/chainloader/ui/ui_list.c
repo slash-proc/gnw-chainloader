@@ -9,7 +9,46 @@
  * (the viewport shifted) before it disappears. */
 #define SCROLLBAR_LINGER_MS 300
 
-void ui_list_init(ui_list_t *list, const char *title, int num_items, 
+/* Fixed gap between the selection indicator's left edge (the list box's left
+ * edge x, where the themed sprite / plain '>' is anchored) and the first
+ * character of the row text. Used for BOTH plain menus and split dual-panes so
+ * the visible cursor-to-text spacing is identical regardless of layout. The
+ * dual-pane's left column is still narrower (its text region width differs),
+ * but this indicator-to-text gap is the same constant in both, and mirrors
+ * correctly in RTL because start_x is fed through gui_mirror_x. */
+#define INDICATOR_TEXT_GAP 22
+
+/* Generic ui_list-backed page: a ui_window_t whose user_data points at its ui_list shares these
+ * two forwarders instead of each view re-declaring trivial update/draw wrappers. Views with extra
+ * page logic (the Partition Viewer's scan state, the File Browser's file ops) keep their own. */
+void ui_list_page_update(ui_window_t *self) { ui_list_update((ui_list_t *)self->user_data); }
+void ui_list_page_draw(ui_window_t *self) {
+    ui_list_draw((ui_list_t *)self->user_data, self->x, self->y, self->w, self->h);
+}
+
+/* One label/value row of a split view's right detail pane: label at one of four fixed slots
+ * (y 40/75/110/145) and its value 15px below, in the 110px detail column (x=198 in LTR, mirrored
+ * left in RTL). marquee+tick scroll a long value. Collapses the px/pw geometry + the label/value
+ * gui_draw_text_aligned pair that the File Browser, FS list, and Partition Viewer right panes all
+ * used to inline. */
+void ui_list_pane_row(int slot, const char *label, const char *value, bool marquee, uint32_t tick) {
+    static const uint8_t LY[4] = { 40, 75, 110, 145 };
+    const int pw = 110;
+    int px = gui_mirror_x(198, pw, 0, SCREEN_WIDTH);
+    gui_draw_text_aligned(px, LY[slot],      pw, label, COLOR_FG, false,   0);
+    gui_draw_text_aligned(px, LY[slot] + 15, pw, value, COLOR_FG, marquee, tick);
+}
+
+/* Configure a list as a split (two-pane) view: enable the divider, set the taller
+ * 9-line visible window the split layout uses, and install the right-pane drawer.
+ * The on_back handler varies per view, so it stays at each call site. */
+void ui_list_set_split(ui_list_t *l, void (*draw_right_pane)(int, uint32_t)) {
+    l->is_split = true;
+    l->visible_lines = 9;
+    l->draw_right_pane = draw_right_pane;
+}
+
+void ui_list_init(ui_list_t *list, const char *title, int num_items,
                   const char* (*get_label)(int), void (*on_action)(int)) {
     list->title = title;
     list->num_items = num_items;
@@ -126,14 +165,25 @@ void ui_list_draw(ui_list_t *list, int x, int y, int w, int h) {
     uint32_t ticks = HAL_GetTick();
 
     if (list->is_split) {
-        gui_draw_rect(gui_mirror_x(x + 188, 1, x, w), y, 1, h, COLOR_BORDER);
+        /* Stop the divider at the footer line when a footer is shown, so it doesn't
+         * run into the footer area; otherwise it spans the full content height. */
+        int footer_top = ui_footer_top();
+        int div_h = (footer_top > 0 && footer_top > y) ? (footer_top - y) : h;
+        gui_draw_rect(gui_mirror_x(x + 188, 1, x, w), y, 1, div_h, COLOR_BORDER);
         if (list->draw_right_pane && list->num_items > 0) {
             list->draw_right_pane(list->selected, list->selected_tick);
         }
     }
 
-    int start_x = list->is_split ? (x + 12) : (x + 22);
-    int max_w = list->is_split ? 166 : (w - 32);
+    /* Text indent: a FIXED gap past the indicator anchor (x) in both modes, so the
+     * cursor-to-text spacing is the same constant in menus and dual-panes. Only the
+     * text region WIDTH differs (the split's left column is narrower, leaving room
+     * for the right pane). */
+    int start_x = x + INDICATOR_TEXT_GAP;
+    /* Split left column ends just shy of the divider (x+188)/scrollbar (x+182); keep
+     * the historical right edge at x+178, so only start_x moved (gap widened to match
+     * the menu), not the column's right boundary. */
+    int max_w = list->is_split ? (178 - INDICATOR_TEXT_GAP) : (w - 32);
     /* RTL: mirror the text region within the list's own box, so rows right-align and
      * the cursor/scrollbar swap sides. Identity in LTR (row_x == start_x). */
     int row_x = gui_mirror_x(start_x, max_w, x, w);
@@ -165,10 +215,19 @@ void ui_list_draw(ui_list_t *list, int x, int y, int w, int h) {
         const char *label = list->get_label(idx);
 
         if (idx == list->selected) {
-            /* Cursor + themed selector mirror to the row's far edge (right in RTL). */
-            int plain_x = gui_mirror_x(list->is_split ? x : (x + 6), 6, x, w);
-            int theme_x = gui_mirror_x(x, 16, x, w);
-            if (list->is_split || !theme_draw_selector(theme_x, item_y, ticks)) {
+            /* Unified selection indicator for BOTH plain and split (dual-pane) lists:
+             * try the active theme's sprite cursor first, falling back to the plain
+             * '>' glyph only when no theme sprite is present. The cursor X is anchored
+             * to the list's left edge (x) the SAME way in both modes -- the 16px themed
+             * sprite at x, the plain '>' 6px in at x+6 -- so the indicator sits
+             * identically whether or not the list is split. This is exactly the
+             * historical plain-menu placement (themed x / plain x+6), so plain menus
+             * stay pixel-identical; split lists previously skipped the themed sprite
+             * and drew '>' flush at x, so their '>' now matches plain (6px in). Both
+             * mirror to the row's far edge (right in RTL) via gui_mirror_x. */
+            int theme_x = gui_mirror_x(x,     16, x, w);
+            int plain_x = gui_mirror_x(x + 6, 6,  x, w);
+            if (!theme_draw_selector(theme_x, item_y, ticks)) {
                 gui_draw_selector(plain_x, item_y, COLOR_ACCENT);
             }
         }

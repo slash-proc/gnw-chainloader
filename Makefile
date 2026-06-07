@@ -58,7 +58,9 @@ src/chainloader/assets_gen.c \
 src/chainloader/system/utils.c \
 src/chainloader/system/input.c \
 src/chainloader/system/loader.c \
+src/chainloader/system/feature.c \
 src/chainloader/system/crash_log.c \
+src/chainloader/system/ofw_verify.c \
 src/chainloader/ui/ui_manager.c \
 src/chainloader/ui/ui_list.c \
 src/chainloader/ui/gui_font.c \
@@ -130,7 +132,7 @@ LIBS = -lc -lm -lnosys
 LDFLAGS = $(MCU) -specs=nano.specs $(LIBS) -Wl,--gc-sections -flto
 
 STUB_LDFLAGS = $(LDFLAGS) -TSTM32H7B0_FLASH_STUB.ld -Wl,-Map=$(STUB_BUILD_DIR)/stub.map
-APP_LDFLAGS  = $(LDFLAGS) -TSTM32H7B0_RAM_APP.ld -Wl,-Map=$(APP_BUILD_DIR)/app.map
+APP_LDFLAGS  = $(LDFLAGS) -ffixed-r9 -TSTM32H7B0_RAM_APP.ld -Wl,-Map=$(APP_BUILD_DIR)/app.map
 
 STUB_OBJECTS = $(addprefix $(STUB_BUILD_DIR)/,$(STUB_C_SOURCES:.c=.o))
 STUB_OBJECTS += $(addprefix $(STUB_BUILD_DIR)/,$(COMMON_ASM_SOURCES:.s=.o))
@@ -139,7 +141,7 @@ APP_OBJECTS = $(addprefix $(APP_BUILD_DIR)/,$(APP_SOURCES:.c=.o))
 APP_OBJECTS += $(addprefix $(APP_BUILD_DIR)/,$(COMMON_ASM_SOURCES:.s=.o))
 
 # default action
-all: $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/fatfs.bin $(BUILD_DIR)/lfs_rw.bin $(BUILD_DIR)/theme.bin $(BUILD_DIR)/language.bin $(BUILD_DIR)/installer.bin
+all: $(BUILD_DIR)/$(TARGET).bin $(BUILD_DIR)/fatfs.bin $(BUILD_DIR)/lfs_rw.bin $(BUILD_DIR)/theme.bin $(BUILD_DIR)/language.bin $(BUILD_DIR)/installer.bin $(BUILD_DIR)/fileops.bin $(BUILD_DIR)/example.bin $(BUILD_DIR)/example_set.bin $(BUILD_DIR)/mp3.bin $(BUILD_DIR)/picture.bin $(BUILD_DIR)/modview.bin
 
 # Asset Cooking
 src/chainloader/assets_gen.c src/chainloader/assets_gen.h: scripts/build/cook_assets.py src/chainloader/mario_tiles.json src/chainloader/zelda_tiles_v3.json | $(BUILD_DIR)
@@ -147,10 +149,13 @@ src/chainloader/assets_gen.c src/chainloader/assets_gen.h: scripts/build/cook_as
 	@python3 scripts/build/cook_assets.py --out-c src/chainloader/assets_gen.c --out-h src/chainloader/assets_gen.h
 
 # RAM Application Build
+# -ffixed-r9: the RAM app reserves r9 so the core never clobbers an r9-pic (XIP) feature module's
+# GOT base (the module addresses its GOT via r9, set by the loader at each core->module entry).
+# Must match the app LTO link (APP_LDFLAGS). Not on the stub (runs no modules, at the flash ceiling).
 $(APP_BUILD_DIR)/%.o: %.c src/chainloader/assets_gen.h | $(APP_BUILD_DIR)
 	@mkdir -p $(dir $@)
 	@echo "CC $< (app)"
-	@$(CC) -c $(CFLAGS) -DVECT_TAB_SRAM $< -o $@
+	@$(CC) -c $(CFLAGS) -ffixed-r9 -DVECT_TAB_SRAM $< -o $@
 
 $(APP_BUILD_DIR)/%.o: %.s | $(APP_BUILD_DIR)
 	@mkdir -p $(dir $@)
@@ -170,7 +175,7 @@ APP_FATFS_RO_DIR = $(APP_BUILD_DIR)/fatfs_ro
 # (opendir/readdir/open/read only), single SBCS code page. This is just a
 # bootstrap reader for the card; the FULL FatFs (LFN + RW + exFAT) ships as a PIE
 # module on the LittleFS. Consequence: FAT files show 8.3 short names.
-APP_FATFS_RO_CFLAGS = -I$(FATFS_SRC_DIR) $(CFLAGS) -DVECT_TAB_SRAM -DFF_FS_READONLY=1 -DFF_FS_EXFAT=0 -DFF_USE_LFN=0 -DFF_FS_MINIMIZE=1 -DFF_CODE_PAGE=437
+APP_FATFS_RO_CFLAGS = -I$(FATFS_SRC_DIR) $(CFLAGS) -ffixed-r9 -DVECT_TAB_SRAM -DFF_FS_READONLY=1 -DFF_FS_EXFAT=0 -DFF_USE_LFN=0 -DFF_FS_MINIMIZE=1 -DFF_CODE_PAGE=437
 APP_FATFS_RO_OBJS = \
 $(APP_FATFS_RO_DIR)/ff.o \
 $(APP_FATFS_RO_DIR)/ffunicode.o \
@@ -200,7 +205,7 @@ $(APP_BUILD_DIR)/app.bin: $(APP_BUILD_DIR)/app.elf
 
 $(BUILD_DIR)/app.bin.lzma: $(APP_BUILD_DIR)/app.bin
 	@echo "LZMA $@"
-	@xz -f -c --format=raw --lzma1=dict=128KiB $< > $@
+	@xz -f -c --format=raw --armthumb --lzma1=dict=128KiB,lc=1,lp=1,pb=1 $< > $@
 
 $(BUILD_DIR)/app.bin.lzma.o: $(BUILD_DIR)/app.bin.lzma
 	@echo "OBJCOPY $@"
@@ -384,6 +389,207 @@ $(BUILD_DIR)/installer.bin: $(MODULE_BUILD_DIR)/installer/installer.elf
 	@echo "BIN $@"
 	@$(BIN) $< $@
 
+# File-operations module (PIE, transient) — recursive folder copy / delete / tree-
+# size, moved out of the in-core file browser so the 40 KiB core never carries them.
+# Loaded on demand for one heavy op, then reclaimed. Reuses the theme module's flags
+# plus the transient flag.
+MODULE_FILEOPS_CFLAGS = $(MODULE_THEME_CFLAGS) -DMODULE_FLAGS=MOD_FLAG_TRANSIENT
+
+$(MODULE_BUILD_DIR)/fileops/module_entry.o: src/modules/fileops/module_entry.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (fileops module)"
+	@$(CC) -c $(MODULE_FILEOPS_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/fileops/fileops.elf: $(MODULE_BUILD_DIR)/fileops/module_entry.o
+	@echo "LD $@"
+	@$(CC) $^ $(MODULE_THEME_LDFLAGS) -o $@
+
+$(BUILD_DIR)/fileops.bin: $(MODULE_BUILD_DIR)/fileops/fileops.elf
+	@echo "BIN $@"
+	@$(BIN) $< $@
+
+# Example feature module (PIE, transient) -- proves the feature-module framework
+# (docs/module-menu-registration.md). Its header manifest (-DMODULE_MENU_*) declares a
+# Tools entry the core discovers + lists with NO module-specific core code. Template
+# for real feature modules (e.g. the MP3 player). Reuses the theme module's flags.
+MODULE_EXAMPLE_CFLAGS = $(MODULE_THEME_CFLAGS) -DMODULE_FLAGS=MOD_FLAG_TRANSIENT \
+    -DMODULE_MENU_ID=MODULE_MENU_TOOLS -DMODULE_MENU_LABEL='"Example"'
+
+$(MODULE_BUILD_DIR)/features/example/module_entry.o: src/modules/features/example/module_entry.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (example feature module)"
+	@$(CC) -c $(MODULE_EXAMPLE_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/example/example.elf: $(MODULE_BUILD_DIR)/features/example/module_entry.o
+	@echo "LD $@"
+	@$(CC) $^ $(MODULE_THEME_LDFLAGS) -o $@
+
+$(BUILD_DIR)/example.bin: $(MODULE_BUILD_DIR)/features/example/example.elf
+	@echo "BIN $@"
+	@$(BIN) $< $@
+
+# Module Overview feature module: a Tools diagnostic that lists the loaded modules (source / pool
+# RAM / state / load model), read from the loader registry via the feature host. English-only, so
+# no strings. Rebuilt AS a module (the in-core view is disabled to hold the 40K stub ceiling).
+# Module Overview is a trivial list view (no latency-sensitive loops), so it XIPs from the store like mp3.
+MODULE_MODOVERVIEW_CFLAGS = $(MODULE_THEME_CFLAGS) $(MODULE_XIP) -DMODULE_FLAGS='(MOD_FLAG_TRANSIENT|MOD_FLAG_R9_PIC)' \
+    -DMODULE_MENU_ID=MODULE_MENU_TOOLS -DMODULE_MENU_LABEL='"Module Overview"'
+MODULE_MODOVERVIEW_LDFLAGS = $(MODULE_THEME_LDFLAGS) $(MODULE_XIP)
+
+$(MODULE_BUILD_DIR)/features/modoverview/module_entry.o: src/modules/features/modoverview/module_entry.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (modoverview feature module)"
+	@$(CC) -c $(MODULE_MODOVERVIEW_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/modoverview/modoverview.elf: $(MODULE_BUILD_DIR)/features/modoverview/module_entry.o
+	@echo "LD $@"
+	@$(CC) $^ $(MODULE_MODOVERVIEW_LDFLAGS) -o $@
+
+# The DEVICE filename must fit FAT 8.3 (modview.bin): the in-core RO FAT reader has LFN disabled, so
+# a long name ("modoverview.bin") gets a long-filename entry it can't resolve at discovery/load.
+$(BUILD_DIR)/modview.bin: $(MODULE_BUILD_DIR)/features/modoverview/modoverview.elf
+	@echo "BIN $@"
+	@$(BIN) $< $@
+
+# Settings variant of the example feature module — same source, header manifest set to
+# MODULE_MENU_SETTINGS so it proves the Settings splice (entry lands between Fast-Boot and
+# Reset Defaults, Reset stays last). Built into its own object dir so the -D difference
+# from the Tools build can't collide.
+MODULE_EXAMPLE_SET_CFLAGS = $(MODULE_THEME_CFLAGS) -DMODULE_FLAGS=MOD_FLAG_TRANSIENT \
+    -DMODULE_MENU_ID=MODULE_MENU_SETTINGS -DMODULE_MENU_LABEL='"Demo Setting"'
+
+$(MODULE_BUILD_DIR)/features/example_set/module_entry.o: src/modules/features/example/module_entry.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (example feature module, Settings)"
+	@$(CC) -c $(MODULE_EXAMPLE_SET_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/example_set/example_set.elf: $(MODULE_BUILD_DIR)/features/example_set/module_entry.o
+	@echo "LD $@"
+	@$(CC) $^ $(MODULE_THEME_LDFLAGS) -o $@
+
+$(BUILD_DIR)/example_set.bin: $(MODULE_BUILD_DIR)/features/example_set/example_set.elf
+	@echo "BIN $@"
+	@$(BIN) $< $@
+
+# MP3 player feature module (PIE, transient) — first real feature module. Registers a Tools
+# entry "MP3 Player" AND claims the .mp3 extension (browser dispatch). Two objects: the
+# framework entry + a register-level SAI1/DMA audio driver (the 40K core has no HAL SAI/DMA,
+# so the module brings the peripheral up itself). minimp3 (vendored, header-only) joins in
+# the decode stage. Reuses the theme module's flags + own include dir.
+# Compiled-in translations: cook_modstrings.py turns i18n/modules/mp3/*.json into a
+# mp3_strings_gen.{c,h} matrix linked into mp3.bin (no device-side files). Regenerated
+# from the JSONs (and by `make i18n`), compiled with the module's own PIE flags.
+MP3_GEN = $(MODULE_BUILD_DIR)/features/mp3/mp3_strings_gen
+# Shared FAT-XIP flag set, opted into per-module via MOD_FLAG_R9_PIC. -msingle-pic-base puts the GOT
+# base in r9; -mno-pic-data-is-text-relative routes .data/.bss through the GOT too (MANDATORY: XIP
+# splits .text in flash from .data/.bss in the RAM slot, so text-relative data would land in flash
+# and bus-fault). Must be on the -flto link too.
+MODULE_XIP = -msingle-pic-base -mpic-register=r9 -mno-pic-data-is-text-relative
+# MP3 player is FAT-XIP: the decode runs fine from flash, the audio DMA buffer (RAM slot) absorbs the latency.
+MODULE_MP3_CFLAGS = $(MODULE_THEME_CFLAGS) $(MODULE_XIP) -Isrc/modules/features/mp3 -I$(MODULE_BUILD_DIR)/features/mp3 \
+    -DMODULE_FLAGS='(MOD_FLAG_TRANSIENT|MOD_FLAG_R9_PIC)' \
+    -DMODULE_MENU_ID=MODULE_MENU_TOOLS -DMODULE_MENU_LABEL='"MP3 Player"' -DMODULE_FILE_EXT='"mp3"'
+MODULE_MP3_LDFLAGS = $(MODULE_THEME_LDFLAGS) $(MODULE_XIP)
+
+# One recipe emits both .c and .h; depend .h on .c (not a dual-target rule) so parallel make
+# doesn't run cook_modstrings twice and race.
+$(MP3_GEN).c: $(wildcard i18n/modules/mp3/*.json) scripts/build/cook_modstrings.py
+	@mkdir -p $(dir $@)
+	@echo "GEN mp3 strings (i18n/modules/mp3/*.json)"
+	@python3 scripts/build/cook_modstrings.py mp3 --out $(dir $@)
+$(MP3_GEN).h: $(MP3_GEN).c
+	@test -f $@
+
+$(MODULE_BUILD_DIR)/features/mp3/module_entry.o: src/modules/features/mp3/module_entry.c $(MP3_GEN).h
+	@mkdir -p $(dir $@)
+	@echo "CC $< (mp3 feature module)"
+	@$(CC) -c $(MODULE_MP3_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/mp3/audio_sai.o: src/modules/features/mp3/audio_sai.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (mp3 audio driver)"
+	@$(CC) -c $(MODULE_MP3_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/mp3/mp3_strings_gen.o: $(MP3_GEN).c $(MP3_GEN).h
+	@echo "CC $< (mp3 strings matrix)"
+	@$(CC) -c $(MODULE_MP3_CFLAGS) $(MP3_GEN).c -o $@
+
+$(MODULE_BUILD_DIR)/features/mp3/mp3.elf: $(MODULE_BUILD_DIR)/features/mp3/module_entry.o $(MODULE_BUILD_DIR)/features/mp3/audio_sai.o $(MODULE_BUILD_DIR)/features/mp3/mp3_strings_gen.o
+	@echo "LD $@"
+	@$(CC) $^ $(MODULE_MP3_LDFLAGS) -o $@
+
+$(BUILD_DIR)/mp3.bin: $(MODULE_BUILD_DIR)/features/mp3/mp3.elf
+	@echo "BIN $@"
+	@$(BIN) $< $@
+
+# Picture Viewer feature module (PIE, transient) — second real feature module. Registers a
+# Tools entry "Picture Viewer" AND claims the .jpg extension (browser dispatch). Decodes JPEG
+# with vendored TJpgDec (ChaN R0.03) straight into the framebuffer — no whole-image buffer, and
+# oversized photos are descaled in-decode. Reuses the theme module's flags + own include dir.
+# Compiled-in translations: cook_modstrings.py turns i18n/modules/picture/*.json into a
+# picture_strings_gen.{c,h} matrix linked into picture.bin (no device-side files).
+PIC_GEN = $(MODULE_BUILD_DIR)/features/picture/picture_strings_gen
+# PICTURE_HW_JPEG=1 (default) decodes JPEGs on the STM32 JPEG hardware codec, falling back to
+# software tjpgd for anything it can't handle (PNG, unsupported subsampling); =0 forces the
+# pure-software path.
+PICTURE_HW_JPEG ?= 1
+# Picture is RAM-only (-fPIC full-copy): its JPEG/PNG decode is latency-sensitive, too slow run from
+# flash. A module opts INTO FAT-XIP with MODULE_XIP + MOD_FLAG_R9_PIC (see the mp3 rule); picture doesn't.
+MODULE_PICTURE_CFLAGS = $(MODULE_THEME_CFLAGS) -Isrc/modules/features/picture -I$(MODULE_BUILD_DIR)/features/picture \
+    -DMODULE_FLAGS=MOD_FLAG_TRANSIENT -DPICTURE_HW_JPEG=$(PICTURE_HW_JPEG) \
+    -DMINIZ_NO_STDIO -DMINIZ_NO_TIME -DMINIZ_NO_ARCHIVE_APIS -DMINIZ_NO_ZLIB_APIS -DMINIZ_NO_MALLOC \
+    -DMODULE_MENU_ID=MODULE_MENU_TOOLS -DMODULE_MENU_LABEL='"Picture Viewer"' -DMODULE_FILE_EXT='"jpg,jpeg,png,bmp"'
+
+# One recipe emits both .c and .h; depend .h on .c so parallel make doesn't race cook_modstrings.
+$(PIC_GEN).c: $(wildcard i18n/modules/picture/*.json) scripts/build/cook_modstrings.py
+	@mkdir -p $(dir $@)
+	@echo "GEN picture strings (i18n/modules/picture/*.json)"
+	@python3 scripts/build/cook_modstrings.py picture --out $(dir $@)
+$(PIC_GEN).h: $(PIC_GEN).c
+	@test -f $@
+
+$(MODULE_BUILD_DIR)/features/picture/module_entry.o: src/modules/features/picture/module_entry.c $(PIC_GEN).h
+	@mkdir -p $(dir $@)
+	@echo "CC $< (picture feature module)"
+	@$(CC) -c $(MODULE_PICTURE_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/picture/tjpgd.o: src/modules/features/picture/tjpgd.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (TJpgDec decoder)"
+	@$(CC) -c $(MODULE_PICTURE_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/picture/png.o: src/modules/features/picture/png.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (PNG decoder)"
+	@$(CC) -c $(MODULE_PICTURE_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/picture/miniz.o: src/modules/features/picture/miniz.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (miniz inflate)"
+	@$(CC) -c $(MODULE_PICTURE_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/picture/bmp.o: src/modules/features/picture/bmp.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (BMP decoder)"
+	@$(CC) -c $(MODULE_PICTURE_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/picture/jpeg_hw.o: src/modules/features/picture/jpeg_hw.c
+	@mkdir -p $(dir $@)
+	@echo "CC $< (HW JPEG decoder)"
+	@$(CC) -c $(MODULE_PICTURE_CFLAGS) $< -o $@
+
+$(MODULE_BUILD_DIR)/features/picture/picture_strings_gen.o: $(PIC_GEN).c $(PIC_GEN).h
+	@echo "CC $< (picture strings matrix)"
+	@$(CC) -c $(MODULE_PICTURE_CFLAGS) $(PIC_GEN).c -o $@
+
+$(MODULE_BUILD_DIR)/features/picture/picture.elf: $(MODULE_BUILD_DIR)/features/picture/module_entry.o $(MODULE_BUILD_DIR)/features/picture/tjpgd.o $(MODULE_BUILD_DIR)/features/picture/png.o $(MODULE_BUILD_DIR)/features/picture/bmp.o $(MODULE_BUILD_DIR)/features/picture/miniz.o $(MODULE_BUILD_DIR)/features/picture/jpeg_hw.o $(MODULE_BUILD_DIR)/features/picture/picture_strings_gen.o
+	@echo "LD $@"
+	@$(CC) $^ $(MODULE_THEME_LDFLAGS) -o $@
+
+$(BUILD_DIR)/picture.bin: $(MODULE_BUILD_DIR)/features/picture/picture.elf
+	@echo "BIN $@"
+	@$(BIN) $< $@
+
 # Dummy module (PIE) — ON-DEVICE ABI-REJECTION TEST ONLY (scripts/tests/
 # test_abi_reject.py). A do-nothing module rebuilt at a matching ABI
 # (DUMMY_ABI=1, accepted) and a mismatched one (DUMMY_ABI=2 / 0, rejected) to
@@ -409,7 +615,7 @@ $(BUILD_DIR)/dummy.bin: $(MODULE_BUILD_DIR)/dummy/dummy.elf
 .PHONY: dummy
 dummy: $(BUILD_DIR)/dummy.bin
 
-$(BUILD_DIR) $(STUB_BUILD_DIR) $(APP_BUILD_DIR) $(MODULE_BUILD_DIR) $(MODULE_BUILD_DIR)/fatfs $(MODULE_BUILD_DIR)/lfs_rw $(MODULE_BUILD_DIR)/theme $(MODULE_BUILD_DIR)/language $(FATFS_SRC_DIR) $(APP_FATFS_RO_DIR):
+$(BUILD_DIR) $(STUB_BUILD_DIR) $(APP_BUILD_DIR) $(MODULE_BUILD_DIR) $(MODULE_BUILD_DIR)/fatfs $(MODULE_BUILD_DIR)/lfs_rw $(MODULE_BUILD_DIR)/theme $(MODULE_BUILD_DIR)/language $(MODULE_BUILD_DIR)/fileops $(FATFS_SRC_DIR) $(APP_FATFS_RO_DIR):
 	mkdir -p $@
 
 clean:
@@ -420,7 +626,7 @@ clean:
 # real firmware sources). test_gui_text: the i18n text layer (utf8 / glyph /
 # width / strings). test_abi_gate: the ABI gate (src/common/abi.h, the exact
 # helpers loader.c / vfs.c call) rejects a mismatched module or .lang pack.
-test_host: | $(BUILD_DIR)
+test-host: | $(BUILD_DIR)
 	gcc -std=c11 -Wall -Wextra -Isrc/chainloader -Isrc/chainloader/ui \
 		scripts/build/test_gui_text.c \
 		src/chainloader/gui_text.c \
@@ -449,7 +655,7 @@ COOK_FONT  = python3 scripts/build/cook_font.py --style $(FONT_STYLE)
 COOK_LANG  = python3 scripts/build/cook_lang.py
 
 # Regenerate the committed in-core ASCII font (ui/gui_font.{c,h}) from the OTF.
-i18n_corefont:
+i18n-corefont:
 	$(COOK_FONT) ascii
 
 # Packs (build/i18n/*.lang) + per-script .chars (build/i18n_tmp), then the external
@@ -461,6 +667,8 @@ i18n: | $(I18N_OUT)
 	$(COOK_FONT) blob --script zh_hans --chars $(I18N_TMP)/zh_hans.chars
 	$(COOK_FONT) blob --script zh_hant --chars $(I18N_TMP)/zh_hant.chars
 	$(COOK_FONT) blob --script ko      --chars $(I18N_TMP)/ko.chars
+	python3 scripts/build/cook_modstrings.py mp3 --out $(MODULE_BUILD_DIR)/features/mp3 --chars-append $(I18N_TMP)/arabic.chars
+	python3 scripts/build/cook_modstrings.py picture --out $(MODULE_BUILD_DIR)/features/picture --chars-append $(I18N_TMP)/arabic.chars
 	$(COOK_FONT) blob --script arabic  --chars $(I18N_TMP)/arabic.chars
 
 $(I18N_OUT):
@@ -470,13 +678,13 @@ $(I18N_OUT):
 # /i18n/fonts/<script>.fnt), one chained gnwmanager session — the dev shortcut. For
 # the real user flow, copy build/i18n/ onto an SD card's /i18n/ and let the device
 # install them. Run after `make i18n` with the device attached.
-push_i18n: i18n
+push-i18n: i18n
 	@python3 scripts/build/push_batched.py \
 	    $(foreach f,$(wildcard $(I18N_OUT)/fonts/*.fnt),/i18n/fonts/$(notdir $(f))=$(f)) \
 	    $(foreach f,$(wildcard $(I18N_OUT)/*.lang),/i18n/$(notdir $(f))=$(f))
 	-$(RESTORE_KEYSTONE)
 
-.PHONY: all clean test_host i18n i18n_corefont push_i18n
+.PHONY: all clean test-host i18n i18n-corefont push-i18n
 
 # Patch payload (keep mostly unchanged)
 PATCH_LDSCRIPT = src/patch/STM32H7B0VBTx_FLASH.ld
@@ -559,3 +767,40 @@ $(BUILD_DIR)/gw_patch_zelda.bin: $(BUILD_DIR)/gw_patch_zelda.elf
 
 include Makefile.common
 include Makefile.patch
+
+# ── QA test suite ───────────────────────────────────────────────────────────
+# Each stage runs scripts/tests/run_suite.py, which self-heals missing OCR fonts
+# (regenerates build/i18n via `make i18n`) and re-renders qa-report.html after the
+# run -- so every stage leaves an up-to-date report and never fails just because
+# `make clean` wiped something. Host tiers (L0/L1) need no device; the full / L2-L4
+# stages drive the device over SWD (one ST-Link at a time).
+QA_RUN = python3 scripts/tests/run_suite.py
+
+# `make qa` dispatches on QA_SCOPE (uses the device BY DEFAULT, best-effort):
+#   auto (default) -> full bench run if the programmer is free + a device is
+#                     connected (pgrep openocd guards against collisions), else host tiers
+#   full           -> force the full bench run (every applicable device test)
+#   host-only      -> force L0+L1 only
+# e.g. `make qa QA_SCOPE=full`.
+QA_SCOPE ?= auto
+
+.PHONY: qa qa-auto qa-full qa-host-only qa-l0 qa-l1 qa-l2 qa-l3 qa-l4 qa-report
+qa: qa-$(QA_SCOPE)       # -> qa-auto (default), qa-full, or qa-host-only
+qa-auto:                 # self-detect: full bench run if a device is connected (programmer free), else host tiers
+	@$(QA_RUN) --auto
+qa-full:                 # force the full bench run: every applicable device test (needs the programmer)
+	@$(QA_RUN) --adaptive
+qa-host-only:            # force L0+L1 host/build gates only, no device
+	@$(QA_RUN) --tier L0,L1
+qa-l0:                   # L0: host unit tests (settings-word, boot-magic, parse, offline OCR)
+	@$(QA_RUN) --tier L0
+qa-l1:                   # L1: build gates (size ceiling, determinism, build matrix)
+	@$(QA_RUN) --tier L1
+qa-l2:                   # L2: component device tests (needs the programmer)
+	@$(QA_RUN) --tier L2
+qa-l3:                   # L3: scenario device tests (needs the programmer)
+	@$(QA_RUN) --tier L3
+qa-l4:                   # L4: environment matrix sweep (needs the programmer)
+	@$(QA_RUN) --tier L4
+qa-report:               # re-render qa-report.html from accumulated results (host-only, runs nothing)
+	@python3 scripts/build/render_qa_report.py

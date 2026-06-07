@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "پخش‌کننده MP3",
+  "MS_PLAYLIST": "فهرست پخش",
+  "MS_PREV": "قبلی",
+  "MS_SEEK": "پیمایش",
+  "MS_PLAY": "پخش",
+  "MS_PAUSE": "مکث",
+  "MS_NEXT": "بعدی",
+  "MS_LIST": "فهرست",
+  "MS_ADD": "افزودن",
+  "MS_REMOVE": "حذف",
+  "MS_EMPTY": "فهرست پخش خالی است.",
+  "MS_HELP_ADD": "فهرست را باز کنید و آهنگ بیفزایید.",
+  "MS_STOPPED": "متوقف شد.",
+  "MS_HELP_PLAY": "پخش را بزنید یا فهرست را باز کنید.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} پیمایش  {BTN_B} لغو  {BTN_A} تأیید",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} انتخاب  {BTN_B} خروج  {BTN_A} تأیید",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} آهنگ  {BTN_LEFTRIGHT} عمل  {BTN_B} بستن  {BTN_A} انتخاب"
+}

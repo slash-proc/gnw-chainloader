@@ -1,0 +1,19 @@
+{
+  "MS_TITLE": "MP3-плеер",
+  "MS_PLAYLIST": "Плейлист",
+  "MS_PREV": "Назад",
+  "MS_SEEK": "Перемотка",
+  "MS_PLAY": "Пуск",
+  "MS_PAUSE": "Пауза",
+  "MS_NEXT": "Вперёд",
+  "MS_LIST": "Список",
+  "MS_ADD": "Добавить",
+  "MS_REMOVE": "Удалить",
+  "MS_EMPTY": "Плейлист пуст.",
+  "MS_HELP_ADD": "Откройте плейлист и добавьте треки.",
+  "MS_STOPPED": "Остановлено.",
+  "MS_HELP_PLAY": "Нажмите Пуск или откройте плейлист.",
+  "MS_FOOTER_SEEK": "{BTN_LEFTRIGHT} Перемотка  {BTN_B} Отмена  {BTN_A} OK",
+  "MS_FOOTER_NORMAL": "{BTN_LEFTRIGHT} Выбрать  {BTN_B} Выход  {BTN_A} OK",
+  "MS_FOOTER_PLAYLIST": "{BTN_UPDOWN} Трек  {BTN_LEFTRIGHT} Действие  {BTN_B} Закрыть  {BTN_A} Выбрать"
+}
