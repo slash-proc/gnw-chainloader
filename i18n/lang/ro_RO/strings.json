@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "Unelte",
   "STR_TITLE_SETTINGS": "Setări",
   "STR_LAUNCH": "Pornește",
@@ -71,5 +71,24 @@
   "STR_ERR_TREE_DEEP": "Arbore prea adânc",
   "STR_ERR_PATH_LONG": "Cale prea lungă",
   "STR_WRITING": "Se scrie: ",
-  "STR_LANG_UPDATE": "Actualizați limba de pe SD?"
+  "STR_SELECT_FS": "Alege FS",
+  "STR_DIR": "Dosar",
+  "STR_FILE": "Fișier",
+  "STR_UNKNOWN": "Necunoscut",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "Citire/Scriere",
+  "STR_MODE_RO": "Doar citire",
+  "STR_FILE_N": "Fișier %d",
+  "STR_DIV_INTFLASH": "Internă",
+  "STR_DIV_EXTFLASH": "Externă",
+  "STR_DIV_SDCARD": "Card SD",
+  "STR_THEME_DEFAULT": "Implicit",
+  "STR_THEME_FALLBACK": "Rezervă",
+  "STR_NOTICE_LANGUAGES": "Limbi",
+  "STR_N_LANGUAGES": "%d limbi",
+  "STR_N_MODULES": "%d module",
+  "STR_INSTALL_FROM_SD": "Instalezi %s de pe SD?",
+  "STR_UPDATED": "%s actualizat",
+  "STR_OFW_SUFFIX": "Firmware %s",
+  "STR_DECIMAL_SEP": ","
 }

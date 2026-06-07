@@ -85,14 +85,14 @@ static void update_browser_title(void) {
     if (g_active_tab == 0) {
         tab_indicator[0] = '\0';
     } else {
-        strcpy(tab_indicator, "< ");
+        strcpy(tab_indicator, gui_rtl ? "> " : "< ");   /* LEFT/RIGHT swap in RTL */
     }
 
     if (!active_partition) {
         strcpy(browser_title, tab_indicator);
-        strcat(browser_title, "SELECT FS");
+        strcat(browser_title, tr(STR_SELECT_FS));
         if (g_active_tab == 0) {
-            strcat(browser_title, " >");
+            strcat(browser_title, gui_rtl ? " <" : " >");
         }
         PAGE_BROWSER.title = browser_title;
         return;
@@ -130,7 +130,7 @@ static void update_browser_title(void) {
         strcat(browser_title, "/");
     }
     if (g_active_tab == 0) {
-        strcat(browser_title, " >");
+        strcat(browser_title, gui_rtl ? " <" : " >");
     }
     PAGE_BROWSER.title = browser_title;
 }
@@ -221,10 +221,12 @@ static void browser_draw_right_pane(int selected_idx, uint32_t selected_tick) {
 
     (void)selected_tick;
 
-    gui_draw_text(198, 40, tr(STR_LBL_TYPE), COLOR_FG);
+    const int pw = 110;
+    int px = gui_mirror_x(198, pw, 0, SCREEN_WIDTH);   /* detail column mirrors left in RTL */
+    gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_TYPE), COLOR_FG, false, 0);
     const char *ext = "";
     if (file_entries[selected_idx].type == BROWSER_TYPE_DIR) {
-        ext = "DIR";
+        ext = tr(STR_DIR);
     } else {
         const char *name = fb_name(selected_idx);
         const char *dot = NULL;
@@ -234,18 +236,18 @@ static void browser_draw_right_pane(int selected_idx, uint32_t selected_tick) {
         if (dot && dot != name) {
             ext = dot + 1;
         } else {
-            ext = "FILE";
+            ext = tr(STR_FILE);
         }
     }
-    gui_draw_text(198, 55, ext, COLOR_FG);
+    gui_draw_text_aligned(px, 55, pw, ext, COLOR_FG, false, 0);
 
-    gui_draw_text(198, 75, tr(STR_LBL_SIZE), COLOR_FG);
+    gui_draw_text_aligned(px, 75, pw, tr(STR_LBL_SIZE), COLOR_FG, false, 0);
     if (file_entries[selected_idx].type == BROWSER_TYPE_DIR) {
-        gui_draw_text(198, 90, "-", COLOR_FG);
+        gui_draw_text_aligned(px, 90, pw, "-", COLOR_FG, false, 0);
     } else {
         char size_buf[16];
         format_size(file_entries[selected_idx].size, size_buf);
-        gui_draw_text(198, 90, size_buf, COLOR_FG);
+        gui_draw_text_aligned(px, 90, pw, size_buf, COLOR_FG, false, 0);
     }
 }
 
@@ -253,29 +255,31 @@ static void fs_list_draw_right_pane(int selected_idx, uint32_t selected_tick) {
     if (selected_idx < 0 || selected_idx >= fs_partition_count) return;
     (void)selected_tick;
     partition_info_t *p = fs_partitions[selected_idx];
-    char buf[16];
+    char buf[32];   /* holds a size string or a translated "UNKNOWN" (3 bytes/char) */
+    const int pw = 110;
+    int px = gui_mirror_x(198, pw, 0, SCREEN_WIDTH);   /* detail column mirrors left in RTL */
 
     if (fs_space_valid[selected_idx]) {
-        gui_draw_text(198, 40, tr(STR_LBL_FREE), COLOR_FG);
+        gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_FREE), COLOR_FG, false, 0);
         format_size_sectors(fs_free_space[selected_idx], buf);
-        gui_draw_text(198, 55, buf, COLOR_FG);
+        gui_draw_text_aligned(px, 55, pw, buf, COLOR_FG, false, 0);
 
-        gui_draw_text(198, 75, tr(STR_LBL_USED), COLOR_FG);
+        gui_draw_text_aligned(px, 75, pw, tr(STR_LBL_USED), COLOR_FG, false, 0);
         format_size_sectors(fs_used_space[selected_idx], buf);
-        gui_draw_text(198, 90, buf, COLOR_FG);
+        gui_draw_text_aligned(px, 90, pw, buf, COLOR_FG, false, 0);
     } else {
         /* Free/Used unavailable (read-only FatFs has no f_getfree) — show total
          * capacity instead. SD stores size as sectors (see partition.c). */
-        gui_draw_text(198, 40, tr(STR_LBL_TOTAL), COLOR_FG);
+        gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_TOTAL), COLOR_FG, false, 0);
         if (p && partition_is_sd(p))  format_size_sectors(p->size, buf);
         else if (p)                   format_size(p->size, buf);
-        else                          strcpy(buf, "UNKNOWN");
-        gui_draw_text(198, 55, buf, COLOR_FG);
+        else                          str_lcpy(buf, sizeof(buf), tr(STR_UNKNOWN));
+        gui_draw_text_aligned(px, 55, pw, buf, COLOR_FG, false, 0);
     }
 
     /* Mode row: the RO/RW distinction (moved here from the title bar). */
-    gui_draw_text(198, 110, tr(STR_LBL_MODE), COLOR_FG);
-    gui_draw_text(198, 125, fs_is_rw[selected_idx] ? "RW" : "RO", COLOR_FG);
+    gui_draw_text_aligned(px, 110, pw, tr(STR_LBL_MODE), COLOR_FG, false, 0);
+    gui_draw_text_aligned(px, 125, pw, fs_is_rw[selected_idx] ? tr(STR_MODE_RW) : tr(STR_MODE_RO), COLOR_FG, false, 0);
 }
 
 static void on_file_action(int idx) {
@@ -385,8 +389,10 @@ static const char* fs_list_get_label(int idx) {
     if (idx >= 0 && idx < fs_partition_count) {
         partition_info_t* p = fs_partitions[idx];
         if (strcmp(p->type, "LittleFS") == 0) {
-            strcpy(buf, "LITTLEFS");
+            str_lcpy(buf, sizeof(buf), tr(STR_FS_LITTLEFS));
         } else {
+            /* Raw FS type code (FAT, Frog, ...) stays literal -- not translatable.
+             * Force-upper the raw code only; never the translated label above. */
             int len = strlen(p->type);
             for (int j = 0; j < len; j++) {
                 char c = p->type[j];
@@ -397,7 +403,7 @@ static const char* fs_list_get_label(int idx) {
         /* Show "RW" right after the type when the RW module loaded successfully
          * (e.g. "LITTLEFS RW" / "FAT RW"), so it's recognizable at a glance; the
          * MODE pane carries the same RO/RW too. */
-        if (fs_is_rw[idx]) strcat(buf, " RW");
+        if (fs_is_rw[idx]) { str_lcat(buf, sizeof(buf), " "); str_lcat(buf, sizeof(buf), tr(STR_MODE_RW)); }
         strcat(buf, " @ 0x");
         hex_to_str(p->address, buf + strlen(buf), 8);
         return buf;
@@ -573,10 +579,11 @@ static void init_tabs_if_needed(void) {
 }
 
 static void menu_browser_enter(ui_window_t *self) {
+    PAGE_BROWSER.title = tr(STR_FILE_BROWSER);   /* header title (translated) */
     if (partition_scan_get_state() == PARTITION_SCAN_IN_PROGRESS) {
         /* Boot scan still running — show progress; it detects the SD itself. */
         g_mode = BROWSER_MODE_SCANNING;
-        ui_list_init(&g_list_browser, "FILE BROWSER", 0, fs_list_get_label, fs_list_on_action);
+        ui_list_init(&g_list_browser, tr(STR_FILE_BROWSER), 0, fs_list_get_label, fs_list_on_action);
         g_list_browser.on_back = ui_pop;
         return;
     }
@@ -645,9 +652,10 @@ static void menu_browser_draw(ui_window_t *self) {
         ui_draw_footer(tr(STR_FOOTER_BROWSER));
         if (file_count == 0) {
             if (mount_res != 0) {
-                char buf[48];
-                strcpy(buf, tr(STR_MOUNT_FAIL));
-                int_to_str(mount_res, buf + strlen(buf));
+                char buf[64], num[12];
+                int_to_str(mount_res, num);
+                str_lcpy(buf, sizeof(buf), tr(STR_MOUNT_FAIL));
+                str_lcat(buf, sizeof(buf), num);
                 gui_draw_text(20, 60, buf, COLOR_RED);
             } else {
                 gui_draw_text(20, 60, tr(STR_EMPTY_DIR), COLOR_RED);
@@ -778,8 +786,7 @@ static uint64_t tree_size_bytes(vfs_driver_t *drv, const char *path, int depth, 
             /* "Calculating..." with a live running file count (no real % yet —
              * we don't know the total until we finish counting). */
             char status[24];
-            strcpy(status, "FILE ");
-            int_to_str(g_size_count, status + 5);
+            str_fmt1_int(status, sizeof(status), tr(STR_FILE_N), g_size_count);
             op_progress((int)((HAL_GetTick() / 20) % 100), tr(STR_CALCULATING), status);
         }
         n++;

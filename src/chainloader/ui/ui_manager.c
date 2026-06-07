@@ -9,6 +9,7 @@
 #include "ui_list.h"
 #include "strings.h"
 #include "theme.h"
+#include "system/gui_api.h"
 #include "system/bench.h"
 #include "../../common/boot_magic.h"
 #include <string.h>
@@ -158,12 +159,12 @@ static void theme_persist(void) {
 }
 
 const char *ui_theme_slot_name(uint8_t slot) {
-    if (slot == THEME_SLOT_DEFAULT)  return "DEFAULT";
-    if (slot == THEME_SLOT_FALLBACK) return "FALLBACK";
+    if (slot == THEME_SLOT_DEFAULT)  return tr(STR_THEME_DEFAULT);
+    if (slot == THEME_SLOT_FALLBACK) return tr(STR_THEME_FALLBACK);
     int mi = (int)slot - THEME_SLOT_MODULE_BASE;
     if (mi >= 0 && mi < g_theme_module_count && g_theme_modules[mi]->name)
-        return g_theme_modules[mi]->name;
-    return "DEFAULT";
+        return g_theme_modules[mi]->name;   /* module name: a proper noun, literal */
+    return tr(STR_THEME_DEFAULT);
 }
 
 /* Selector order shown to the user: DEFAULT, module themes..., FALLBACK (last). */
@@ -219,6 +220,7 @@ void theme_modules_init(void) {
     host.framebuffer    = gui_current_framebuffer;
     host.palette        = dynamic_palette;
     host.tileset        = dynamic_tileset;
+    host.gui            = gui_api();   /* RTL-aware GUI services for the module */
     mod_load_theme("/modules/theme/theme.bin", &host);
     /* Module load attempted: from here ui_update_theme() applies the real theme,
      * or falls back to default if the module is absent — never leaves the screen
@@ -373,22 +375,28 @@ void ui_draw_header(const char *title) {
     // Draw header divider line
     gui_draw_rect(0, 22, SCREEN_WIDTH, 1, (app_active || g_stack_ptr < 0) ? COLOR_FG : gui_accent_color);
 
-    char batt_str[32];
+    char batt_str[96];   /* translated; Arabic presentation forms are 3 bytes/char */
     int pct;
     bool charging;
     board_battery_update(&pct, &charging);
     
-    strcpy(batt_str, tr(STR_BATT));
-    int_to_str(pct, batt_str + strlen(batt_str));
-    strcat(batt_str, "%");
-    if (charging) strcat(batt_str, tr(STR_CHARGING));
+    char pctstr[12];
+    int_to_str(pct, pctstr);                       /* "100" */
+    str_lcat(pctstr, sizeof(pctstr), "%");         /* one LTR run: "100%" */
+    /* Pieces in logical reading order; gui_compose reverses them for RTL so the Arabic
+     * label sits at the right edge with the % to its left, instead of the colon/number
+     * landing in the wrong spots. */
+    const char *batt_pieces[3] = { tr(STR_BATT), pctstr, charging ? tr(STR_CHARGING) : NULL };
+    gui_compose(batt_str, sizeof(batt_str), batt_pieces, 3);
 
-    int batt_x = SCREEN_WIDTH - gui_text_width(batt_str) - 4;
+    int batt_w = gui_text_width(batt_str);
+    int batt_x = SCREEN_WIDTH - batt_w - 4;
     int max_w = batt_x - 30;
     if (max_w < 50) max_w = 50;
 
-    gui_draw_text_marquee(20, 7, max_w, title, COLOR_FG, true, 0);
-    gui_draw_text(batt_x, 7, batt_str, COLOR_FG);
+    /* RTL: title right-aligned, battery on the left (mirror within the full screen). */
+    gui_draw_text_aligned(gui_mirror_x(20, max_w, 0, SCREEN_WIDTH), 7, max_w, title, COLOR_FG, true, 0);
+    gui_draw_text(gui_mirror_x(batt_x, batt_w, 0, SCREEN_WIDTH), 7, batt_str, COLOR_FG);
 }
 
 static void ui_draw_footer_bar(void) {
@@ -417,9 +425,9 @@ static void ui_draw_window_chrome(ui_window_t *win) {
     }
     gui_draw_rect(win->x, win->y, win->w, win->h, COLOR_BORDER);
     
-    // Draw optional title header inside floating window/modal
+    // Draw optional title header inside floating window/modal (right-aligned in RTL)
     if (win->title && win->is_modal) {
-        gui_draw_text(win->x + 10, win->y + 8, win->title, COLOR_FG);
+        gui_draw_text_aligned(win->x + 10, win->y + 8, win->w - 20, win->title, COLOR_FG, false, 0);
         gui_draw_rect(win->x, win->y + 24, win->w, 1, COLOR_BORDER);
     }
 }
@@ -454,8 +462,8 @@ static void (*g_confirm_callback)(void) = NULL;
 static ui_window_t g_confirm_win;
 
 static void confirm_draw(ui_window_t *self) {
-    gui_draw_text(self->x + 20, self->y + 40, g_confirm_msg, COLOR_FG);
-    gui_draw_text(self->x + 20, self->y + 70, tr(STR_YES_NO), COLOR_FG);
+    gui_draw_text_aligned(self->x + 20, self->y + 40, self->w - 40, g_confirm_msg, COLOR_FG, false, 0);
+    gui_draw_text_aligned(self->x + 20, self->y + 70, self->w - 40, tr(STR_YES_NO), COLOR_FG, false, 0);
 }
 
 static void confirm_update(ui_window_t *self) {
@@ -490,8 +498,8 @@ static const char *g_error_msg = NULL;
 static ui_window_t g_error_win;
 
 static void error_draw(ui_window_t *self) {
-    gui_draw_text(self->x + 20, self->y + 40, g_error_msg, COLOR_FG);
-    gui_draw_text(self->x + 20, self->y + 70, tr(STR_PRESS_ANY), COLOR_FG);
+    gui_draw_text_aligned(self->x + 20, self->y + 40, self->w - 40, g_error_msg, COLOR_FG, false, 0);
+    gui_draw_text_aligned(self->x + 20, self->y + 70, self->w - 40, tr(STR_PRESS_ANY), COLOR_FG, false, 0);
 }
 
 static void error_update(ui_window_t *self) {
@@ -526,9 +534,9 @@ void ui_show_error(const char *message) {
     show_message_modal(tr(STR_ERROR), message);
 }
 
-/* A neutral-titled boot notice (the language auto-install summary). English. */
+/* A neutral-titled boot notice (the SD install summary). */
 void ui_show_notice(const char *message) {
-    show_message_modal("LANGUAGES", message);
+    show_message_modal(tr(STR_NOTICE_LANGUAGES), message);
 }
 
 /* Module UI service: hand PIE modules the core's confirm/error modals so they can
@@ -536,6 +544,37 @@ void ui_show_notice(const char *message) {
 #include "system/mod_ui.h"
 static const mod_ui_t g_mod_ui = { ui_show_confirm, ui_show_error };
 const mod_ui_t *mod_ui(void) { return &g_mod_ui; }
+
+/* GUI-services vtable handed to PIE modules (see system/gui_api.h): the core's
+ * RTL-aware drawing primitives + modals, so a module renders in the core's style with
+ * mirroring handled for free. Points at the gui_* / ui_show_* functions. */
+static const gui_api_t g_gui_api = {
+    .is_rtl            = gui_is_rtl,
+    .mirror_x          = gui_mirror_x,
+    .text_width        = gui_text_width,
+    .draw_text         = gui_draw_text,
+    .draw_text_aligned = gui_draw_text_aligned,
+    .draw_text_marquee = gui_draw_text_marquee,
+    .draw_char         = gui_draw_char,
+    .draw_selector     = gui_draw_selector,
+    .draw_rect         = gui_draw_rect,
+    .fill_rect         = gui_draw_fill_rect,
+    .blend_rect        = gui_draw_blend_rect,
+    .draw_progress_bar = gui_draw_progress_bar,
+    .draw_sprite       = gui_draw_sprite,
+    .color_bg          = gui_color_bg,
+    .color_fg          = gui_color_fg,
+    .color_accent      = gui_color_accent,
+    .color_border      = gui_color_border,
+    .color_footer      = gui_color_footer,
+    .framebuffer       = gui_current_framebuffer,
+    .refresh           = gui_refresh,
+    .confirm           = ui_show_confirm,
+    .error             = ui_show_error,
+    .notice            = ui_show_notice,
+    .context_menu      = ui_show_context_menu,
+};
+const gui_api_t *gui_api(void) { return &g_gui_api; }
 
 static const char **g_context_options = NULL;
 static int g_context_count = 0;

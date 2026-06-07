@@ -2,6 +2,7 @@
 #define GUI_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #define SCREEN_WIDTH  320
 #define SCREEN_HEIGHT 240
@@ -15,6 +16,8 @@ extern uint16_t gui_fg_color;
 extern uint16_t gui_accent_color;
 extern uint16_t gui_border_color;
 extern uint16_t gui_footer_color;
+/* Right-to-left UI flag (see gui.c). Only layout/chrome mirror; glyphs never flip. */
+extern bool gui_rtl;
 #define COLOR_BG      gui_bg_color
 #define COLOR_FG      gui_fg_color
 #define COLOR_ACCENT  gui_accent_color
@@ -66,6 +69,20 @@ void gui_draw_selector(int x, int y, uint16_t color);
 void gui_draw_text(int x, int y, const char *str, uint16_t color);
 void gui_draw_char_clipped(int x, int y, int clip_x, int clip_w, uint32_t cp, uint16_t color);
 void gui_draw_text_marquee(int x, int y, int max_w, const char *str, uint16_t color, bool is_active, uint32_t tick_offset);
+/* Reading-edge aligned text: left in LTR, right-anchored within [x, x+w] in RTL. */
+void gui_draw_text_aligned(int x, int y, int w, const char *str, uint16_t color, bool is_active, uint32_t tick_offset);
+/* Box-aware RTL mirror of an x coordinate (identity when !gui_rtl). See gui.c. */
+int gui_mirror_x(int x, int elem_w, int box_x, int box_w);
+/* Join logical-order pieces into buf in display order (reversed for RTL) so runtime
+ * mixed Arabic+number/Latin strings read correctly. Bounded; NULL pieces skipped. */
+void gui_compose(char *buf, int cap, const char *const *pieces, int n);
+/* Accessors for the gui_api module vtable (modules can't read core globals). */
+bool gui_is_rtl(void);
+uint16_t gui_color_bg(void);
+uint16_t gui_color_fg(void);
+uint16_t gui_color_accent(void);
+uint16_t gui_color_border(void);
+uint16_t gui_color_footer(void);
 void gui_draw_rect(int x, int y, int w, int h, uint16_t color);
 void gui_draw_fill_rect(int x, int y, int w, int h, uint16_t color);
 void gui_draw_blend_rect(int x, int y, int w, int h);

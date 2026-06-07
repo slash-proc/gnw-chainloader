@@ -53,6 +53,8 @@ typedef struct {
     bool        (*set)(uint8_t idx);
     void        (*rediscover)(void);   /* re-scan LittleFS after the installer added packs */
     void        (*persist)(void);
+    const char *(*code)(int idx);      /* locale code for the selector "(de_DE)" suffix */
+    bool        (*rtl)(void);          /* active language is right-to-left (arabic) */
 } lang_api_t;
 
 /* Core-side loader (system/loader.c): load /modules/language.bin and run its

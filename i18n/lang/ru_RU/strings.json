@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "Утилиты",
   "STR_TITLE_SETTINGS": "Настройки",
   "STR_LAUNCH": "Запуск",
@@ -70,5 +70,25 @@
   "STR_ERR_DISK_FULL": "Диск переполнен",
   "STR_ERR_TREE_DEEP": "Дерево слишком глубоко",
   "STR_ERR_PATH_LONG": "Путь слишком длинный",
-  "STR_WRITING": "Запись: "
+  "STR_WRITING": "Запись: ",
+  "STR_SELECT_FS": "Выбор ФС",
+  "STR_DIR": "Папка",
+  "STR_FILE": "Файл",
+  "STR_UNKNOWN": "Неизвестно",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "Чтение/Запись",
+  "STR_MODE_RO": "Только чтение",
+  "STR_FILE_N": "Файл %d",
+  "STR_DIV_INTFLASH": "Внутренняя",
+  "STR_DIV_EXTFLASH": "Внешняя",
+  "STR_DIV_SDCARD": "SD-карта",
+  "STR_THEME_DEFAULT": "По умолчанию",
+  "STR_THEME_FALLBACK": "Запасная",
+  "STR_NOTICE_LANGUAGES": "Языки",
+  "STR_N_LANGUAGES": "%d языков",
+  "STR_N_MODULES": "%d модулей",
+  "STR_INSTALL_FROM_SD": "Установить %s с SD?",
+  "STR_UPDATED": "Обновлено: %s",
+  "STR_OFW_SUFFIX": "Прошивка %s",
+  "STR_DECIMAL_SEP": ","
 }

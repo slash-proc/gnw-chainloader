@@ -52,6 +52,10 @@ int         i18n_count(void)   { return g_lang.count   ? g_lang.count()   : 1; }
 const char *i18n_endonym(int idx) {
     return g_lang.endonym ? g_lang.endonym(idx) : (idx == 0 ? "English" : "");
 }
+const char *i18n_code(int idx) {
+    return g_lang.code ? g_lang.code(idx) : (idx == 0 ? "en" : "");
+}
+bool i18n_is_rtl(void) { return g_lang.rtl ? g_lang.rtl() : false; }
 uint8_t i18n_cycle(uint8_t cur, int dir) { return g_lang.cycle ? g_lang.cycle(cur, dir) : 0; }
 bool    i18n_set(uint8_t idx)            { return g_lang.set   ? g_lang.set(idx)   : (idx == 0); }
 void    i18n_rediscover(void)            { if (g_lang.rediscover) g_lang.rediscover(); }

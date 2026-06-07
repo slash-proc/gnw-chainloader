@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "도구",
   "STR_TITLE_SETTINGS": "설정",
   "STR_LAUNCH": "실행",
@@ -70,5 +70,28 @@
   "STR_ERR_DISK_FULL": "디스크 가득 참",
   "STR_ERR_TREE_DEEP": "계층 너무 깊음",
   "STR_ERR_PATH_LONG": "경로 너무 김",
-  "STR_WRITING": "기록: "
+  "STR_WRITING": "기록: ",
+  "STR_SELECT_FS": "FS 선택",
+  "STR_DIR": "폴더",
+  "STR_FILE": "파일",
+  "STR_UNKNOWN": "알 수 없음",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "읽기/쓰기",
+  "STR_MODE_RO": "읽기 전용",
+  "STR_FILE_N": "파일 %d",
+  "STR_DIV_INTFLASH": "내부",
+  "STR_DIV_EXTFLASH": "외부",
+  "STR_DIV_SDCARD": "SD 카드",
+  "STR_THEME_DEFAULT": "기본",
+  "STR_THEME_FALLBACK": "대체",
+  "STR_NOTICE_LANGUAGES": "언어",
+  "STR_N_LANGUAGES": "%d개 언어",
+  "STR_N_MODULES": "%d개 모듈",
+  "STR_INSTALL_FROM_SD": "SD에서 %s 설치?",
+  "STR_UPDATED": "%s 업데이트됨",
+  "STR_OFW_SUFFIX": "%s 펌웨어",
+  "STR_DECIMAL_SEP": ".",
+  "_adopted": [
+    "STR_DECIMAL_SEP"
+  ]
 }

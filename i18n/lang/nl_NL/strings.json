@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "Hulpmiddelen",
   "STR_TITLE_SETTINGS": "Instellingen",
   "STR_LAUNCH": "Starten",
@@ -70,5 +70,28 @@
   "STR_ERR_DISK_FULL": "Schijf vol",
   "STR_ERR_TREE_DEEP": "Boom te diep",
   "STR_ERR_PATH_LONG": "Pad te lang",
-  "STR_WRITING": "Schrijven: "
+  "STR_WRITING": "Schrijven: ",
+  "STR_SELECT_FS": "Kies FS",
+  "STR_DIR": "Map",
+  "STR_FILE": "Bestand",
+  "STR_UNKNOWN": "Onbekend",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "Lezen/Schrijven",
+  "STR_MODE_RO": "Alleen-lezen",
+  "STR_FILE_N": "Bestand %d",
+  "STR_DIV_INTFLASH": "Intern",
+  "STR_DIV_EXTFLASH": "Extern",
+  "STR_DIV_SDCARD": "SD-kaart",
+  "STR_THEME_DEFAULT": "Standaard",
+  "STR_THEME_FALLBACK": "Reserve",
+  "STR_NOTICE_LANGUAGES": "Talen",
+  "STR_N_LANGUAGES": "%d talen",
+  "STR_N_MODULES": "%d modules",
+  "STR_INSTALL_FROM_SD": "%s van SD installeren?",
+  "STR_UPDATED": "%s bijgewerkt",
+  "STR_OFW_SUFFIX": "%s Firmware",
+  "STR_DECIMAL_SEP": ",",
+  "_adopted": [
+    "STR_N_MODULES"
+  ]
 }

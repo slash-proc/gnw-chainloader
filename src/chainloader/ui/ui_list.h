@@ -19,6 +19,10 @@ typedef struct {
     /* Optional value-selector hook: LEFT/RIGHT on the selected row call this
      * with dir -1/+1 (e.g. the "< Theme >" item). NULL = LEFT/RIGHT ignored. */
     void (*on_adjust)(int index, int dir);
+    /* Optional GAME-button hook: a GAME press calls this with the selected row
+     * index (e.g. the Launch row flashing an OFW backup to preview its theme).
+     * NULL = GAME ignored. */
+    void (*on_game)(int index);
     /* Optional per-item enable predicate. Items returning false are shown greyed
      * out and skipped by navigation/action (like dividers). NULL = all enabled. */
     bool (*is_enabled)(int index);

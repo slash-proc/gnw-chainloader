@@ -8,6 +8,20 @@ void int_to_str(int val, char *buf);
 void int_to_str_w(int val, char *buf, int width);
 #endif
 void hex_to_str(uint32_t val, char *buf, int width);
+
+/* Bounded string ops: never write past dst[cap-1], always NUL-terminate; an oversized
+ * source TRUNCATES rather than overflowing (so no translated/module string can smash a
+ * fixed UI buffer and crash the device). Use these for any buffer fed by `tr()`/data. */
+void str_lcpy(char *dst, int cap, const char *src);
+void str_lcat(char *dst, int cap, const char *src);
+
+/* Single-placeholder template splicers (there is no printf), BOUNDED to `cap`. Copy
+ * `tmpl` into `dst`, replacing the FIRST "%d" (resp. "%s") with the integer (resp.
+ * string); a template with no placeholder copies through unchanged. Lets each language
+ * place the value correctly (e.g. "Updated %s" / "%s OFW" / "File %d"). */
+void str_fmt1_int(char *dst, int cap, const char *tmpl, int n);
+void str_fmt1_str(char *dst, int cap, const char *tmpl, const char *s);
+
 void format_size(uint32_t bytes, char *buf);
 /* Like format_size but takes a count of 512-byte sectors, so capacities > 4 GB
  * (which overflow a uint32_t byte count) format correctly. */

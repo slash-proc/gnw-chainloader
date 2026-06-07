@@ -587,7 +587,9 @@ void partition_erase(uint32_t addr, uint32_t size) {
 
 void partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size) {
     char status_msg[64];
-    strcpy(status_msg, tr(STR_PREPARING)); strcat(status_msg, name); strcat(status_msg, "...");
+    str_lcpy(status_msg, sizeof(status_msg), tr(STR_PREPARING));
+    str_lcat(status_msg, sizeof(status_msg), name);
+    str_lcat(status_msg, sizeof(status_msg), "...");
     update_progress_ui(0, tr(STR_FLASHING), status_msg);
 
     if (!board_flash_erase()) {
@@ -613,7 +615,9 @@ void partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size) {
         
         int pct = (written * 100 / total);
         char kb[16]; int_to_str(written / 1024, kb);
-        strcpy(status_msg, tr(STR_WRITING)); strcat(status_msg, kb); strcat(status_msg, "KB...");
+        str_lcpy(status_msg, sizeof(status_msg), tr(STR_WRITING));
+        str_lcat(status_msg, sizeof(status_msg), kb);
+        str_lcat(status_msg, sizeof(status_msg), "KB...");
         update_progress_ui(pct, tr(STR_FLASHING), status_msg);
     }
     

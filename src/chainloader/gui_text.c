@@ -14,6 +14,25 @@
 static gui_ext_glyph_fn g_ext_glyph;
 void gui_set_ext_glyph(gui_ext_glyph_fn fn) { g_ext_glyph = fn; }
 
+/* Right-to-left layout flag: set on a language change (menu_apply_language) when the
+ * active language is RTL (arabic), or forced on by an RTL_TEST build. Only LAYOUT and
+ * directional chrome mirror; glyphs are never pixel-flipped or reordered, so LTR output
+ * is byte-for-byte unchanged when it is false. Lives here (HAL-free) so the mirror math
+ * is host-unit-testable. */
+#ifdef RTL_TEST
+bool gui_rtl = true;     /* force-mirror with English for pre-Arabic verification */
+#else
+bool gui_rtl = false;
+#endif
+
+/* Box-aware horizontal mirror: reflect an element of width `elem_w` placed at `x`
+ * within the box [box_x, box_x+box_w]. Identity when !gui_rtl. Full-screen surfaces
+ * pass (0, SCREEN_WIDTH); centered widgets / modals pass their own (x, w) box so a
+ * non-full-width menu mirrors within itself rather than across the whole screen. */
+int gui_mirror_x(int x, int elem_w, int box_x, int box_w) {
+    return gui_rtl ? box_x + box_w - (x - box_x) - elem_w : x;
+}
+
 uint32_t gui_utf8_next(const uint8_t **p) {
     const uint8_t *s = *p;
     uint32_t c = *s++;

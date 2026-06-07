@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "ツール",
   "STR_TITLE_SETTINGS": "設定",
   "STR_LAUNCH": "起動",
@@ -70,5 +70,28 @@
   "STR_ERR_DISK_FULL": "ディスク満杯",
   "STR_ERR_TREE_DEEP": "階層が深すぎ",
   "STR_ERR_PATH_LONG": "パスが長すぎ",
-  "STR_WRITING": "書込み: "
+  "STR_WRITING": "書込み: ",
+  "STR_SELECT_FS": "FSを選択",
+  "STR_DIR": "フォルダ",
+  "STR_FILE": "ファイル",
+  "STR_UNKNOWN": "不明",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "読み書き",
+  "STR_MODE_RO": "読み取り専用",
+  "STR_FILE_N": "ファイル %d",
+  "STR_DIV_INTFLASH": "内部",
+  "STR_DIV_EXTFLASH": "外部",
+  "STR_DIV_SDCARD": "SDカード",
+  "STR_THEME_DEFAULT": "標準",
+  "STR_THEME_FALLBACK": "予備",
+  "STR_NOTICE_LANGUAGES": "言語",
+  "STR_N_LANGUAGES": "%d 言語",
+  "STR_N_MODULES": "%d モジュール",
+  "STR_INSTALL_FROM_SD": "SDから%sをインストール？",
+  "STR_UPDATED": "%sを更新しました",
+  "STR_OFW_SUFFIX": "%s ファームウェア",
+  "STR_DECIMAL_SEP": ".",
+  "_adopted": [
+    "STR_DECIMAL_SEP"
+  ]
 }

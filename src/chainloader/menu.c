@@ -94,9 +94,9 @@ static bool any_target_bootable(void) {
  * (not part of the translatable set), as MARIO/ZELDA are elsewhere. */
 static const char *target_name(boot_target_t t) {
     switch (t) {
-        case BT_RETROGO: return "RETRO-GO";
-        case BT_MARIO:   return "MARIO";
-        case BT_ZELDA:   return "ZELDA";
+        case BT_RETROGO: return "Retro-Go";
+        case BT_MARIO:   return "Mario";
+        case BT_ZELDA:   return "Zelda";
         default:         return "";
     }
 }
@@ -165,6 +165,31 @@ static void action_tools_enter(void) { ui_push(&PAGE_TOOLS); }
 
 enum { MM_BOOT, MM_TOOLS, MM_SETTINGS, MM_POWER, MM_COUNT };
 
+/* Compose a value-selector label into `buf`: "label: < value >" (bracketed cycler,
+ * e.g. LAUNCH/THEME/LANGUAGE) or "label: value" (plain toggle, e.g. FAST-BOOT). The
+ * single composition point for these selectors -- Phase B makes it RTL-aware. */
+static void compose_value(const char *label, const char *value, bool bracketed, char *buf, int cap) {
+    /* Frame the cycled value with the selector brackets (decoration), then place the
+     * label, separator and value in reading order. gui_compose handles LTR vs RTL
+     * ordering (reversing the pieces for RTL) and is bounded, so an over-long translated
+     * label/value truncates rather than overflowing (stability is law). */
+    char framed[96];
+    if (bracketed) {
+        /* The cycler arrows always point OUTWARD ("< value >") in both LTR and RTL --
+         * only the value's POSITION in the line mirrors (the gui_compose below), not the
+         * bracket glyphs. Built directly rather than through gui_compose so the RTL piece-
+         * reversal can't flip "< >" into the inward-pointing "> <" (the swapped-arrow look).
+         * Bounded: an over-long value truncates rather than overflowing (stability is law). */
+        framed[0] = '\0';
+        str_lcat(framed, sizeof(framed), "< ");
+        str_lcat(framed, sizeof(framed), value);
+        str_lcat(framed, sizeof(framed), " >");
+        value = framed;
+    }
+    const char *p[3] = { label, ": ", value };
+    gui_compose(buf, cap, p, 3);
+}
+
 static const char* get_main_label(int idx) {
     switch (idx) {
         case MM_BOOT: {
@@ -173,11 +198,8 @@ static const char* get_main_label(int idx) {
              * (">") from the value bracket; LEFT/RIGHT cycle the target and A
              * launches it. Greyed + label-only when nothing is bootable. */
             if (!any_target_bootable()) return tr(STR_LAUNCH);
-            static char buf[48];
-            strcpy(buf, tr(STR_LAUNCH));
-            strcat(buf, ": < ");
-            strcat(buf, target_name(g_boot_target));
-            strcat(buf, " >");
+            static char buf[96];
+            compose_value(tr(STR_LAUNCH), target_name(g_boot_target), true, buf, sizeof(buf));
             return buf;
         }
         case MM_TOOLS:    return tr(STR_TITLE_TOOLS);
@@ -202,18 +224,45 @@ static void on_main_adjust(int idx, int dir) {
     g_boot_target = next_bootable(g_boot_target, dir);
 }
 
-/* Boot the selected target. Retro-Go jumps straight to Bank 1. For an OFW, flash
- * its backup into Bank 2 first if it isn't already the valid active OFW (a
- * deliberate A-press, so a progress bar only, no confirm prompt), then jump. */
+/* Flash the selected console's OFW backup into Bank 2 when it isn't already the valid
+ * active OFW. Returns true if a flash happened; false (no-op) when the OFW is already
+ * active or no external backup exists. The single shared flash point for both A-boot and
+ * the GAME-button theme preview: a deliberate button press is the confirmation, so it
+ * shows a progress bar only (no confirm prompt). Reuses the trusted partition_flash_ofw
+ * path -- it targets Bank 2 only and never touches Bank 1 / the boot path. */
+static bool ensure_ofw_flashed(board_console_type_t want) {
+    bool active_valid = (want == board_console_type) && board_is_valid_app(OFW_INTERNAL_BASE);
+    if (active_valid || !ofw_backup_present(want)) return false;
+    /* "<Console> OFW" flash-progress title -- the console name is a proper noun (kept
+     * literal); the "OFW" word/order comes from the translated template. */
+    bool zelda = (want == CONSOLE_ZELDA);
+    static char ofw_title[32];
+    str_fmt1_str(ofw_title, sizeof(ofw_title), tr(STR_OFW_SUFFIX), zelda ? "Zelda" : "Mario");
+    partition_flash_ofw(ofw_title, zelda ? ZELDA_SPI_OFFSET : MARIO_SPI_OFFSET, OFW_INTERNAL_SIZE);
+    return true;
+}
+
+/* Boot the selected target. Retro-Go jumps straight to Bank 1. For an OFW, flash its
+ * backup into Bank 2 first if needed (deliberate A-press), then jump. */
 static void boot_selected_target(void) {
     if (g_boot_target == BT_RETROGO) { action_retro_go(); return; }
     board_console_type_t want = (g_boot_target == BT_ZELDA) ? CONSOLE_ZELDA : CONSOLE_MARIO;
-    bool active_valid = (want == board_console_type) && board_is_valid_app(OFW_INTERNAL_BASE);
-    if (!active_valid && ofw_backup_present(want)) {
-        if (want == CONSOLE_ZELDA) partition_flash_ofw("Zelda OFW", ZELDA_SPI_OFFSET, OFW_INTERNAL_SIZE);
-        else                        partition_flash_ofw("Mario OFW", MARIO_SPI_OFFSET, OFW_INTERNAL_SIZE);
-    }
+    ensure_ofw_flashed(want);
     action_ofw();
+}
+
+/* GAME button on the Launch row: flash the selected OFW backup into Bank 2 to preview
+ * its theme -- no boot, no bank swap. Never for Retro-Go (not an OFW), and only when the
+ * OFW isn't already active (ensure_ofw_flashed guards both -> nothing to do otherwise).
+ * After a flash, re-detect the console and reload its theme colours/sprites -- the same
+ * trio board_init runs at boot -- so the chainloader UI re-themes live for the preview. */
+static void on_main_game(int idx) {
+    if (idx != MM_BOOT || g_boot_target == BT_RETROGO) return;
+    board_console_type_t want = (g_boot_target == BT_ZELDA) ? CONSOLE_ZELDA : CONSOLE_MARIO;
+    if (ensure_ofw_flashed(want)) {
+        board_detect_console_type();    /* Bank 2 now holds the new OFW */
+        board_load_dynamic_assets();    /* reload theme colours + sprites for the preview */
+    }
 }
 
 static void on_main_action(int idx) {
@@ -238,6 +287,7 @@ static void menu_main_enter(void) {
     ui_list_init(&g_list_main, tr(STR_TITLE_MAIN), MM_COUNT, get_main_label, on_main_action);
     g_list_main.visible_lines = 6;
     g_list_main.on_adjust = on_main_adjust;
+    g_list_main.on_game = on_main_game;   /* GAME flashes the selected OFW (theme preview) */
     g_list_main.is_enabled = main_is_enabled;
 }
 
@@ -300,16 +350,15 @@ static void menu_do_install(void) {
 /* One-shot at boot once the filesystems are up: count new SD language packs and, if
  * any, ask to install them. The installer is reclaimed after the scan; the menu is
  * untouched when there is nothing new (or no SD / no installer module). */
-/* Append "N word" to buf (manual int-to-str; the install prompt + notice are
- * English, not translated -- a translated prompt would need new strings + a
- * STRINGS_ABI bump). */
-static void append_count(char *buf, int n, const char *word) {
-    char tmp[8], num[8];
-    int v = n, t = 0, i = 0;
-    while (v > 0 && t < 7) { tmp[t++] = (char)('0' + v % 10); v /= 10; }
-    while (t > 0) num[i++] = tmp[--t];
-    num[i] = '\0';
-    strcat(buf, num); strcat(buf, " "); strcat(buf, word);
+/* Build the translatable "<N languages>[, <M modules>]" item phrase into buf: each
+ * count phrase ("%d languages" / "%d modules") is spliced per-language; the comma is
+ * structural. Shared by the install prompt and the post-install notice. */
+static void build_install_phrase(char *buf, int cap, int nl, int nm) {
+    char tmp[32];
+    buf[0] = '\0';
+    if (nl > 0) { str_fmt1_int(tmp, sizeof(tmp), tr(STR_N_LANGUAGES), nl); str_lcat(buf, cap, tmp); }
+    if (nl > 0 && nm > 0) str_lcat(buf, cap, ", ");
+    if (nm > 0) { str_fmt1_int(tmp, sizeof(tmp), tr(STR_N_MODULES), nm); str_lcat(buf, cap, tmp); }
 }
 
 static void menu_offer_sd_install(void) {
@@ -324,14 +373,12 @@ static void menu_offer_sd_install(void) {
     mod_pool_reset(mark);
     if (nl <= 0 && nm <= 0) return;
 
-    /* "Install [N language(s)][, ][M module(s)] from SD?" -- class-aware, so a
+    /* "Install <N languages>[, <M modules>] from SD?" -- class-aware, so a
      * module-only SD prompts for modules, not languages. */
-    static char msg[56];
-    strcpy(msg, "Install ");
-    if (nl > 0) append_count(msg, nl, nl == 1 ? "language" : "languages");
-    if (nl > 0 && nm > 0) strcat(msg, ", ");
-    if (nm > 0) append_count(msg, nm, nm == 1 ? "module" : "modules");
-    strcat(msg, " from SD?");
+    static char msg[96];
+    char items[64];
+    build_install_phrase(items, sizeof(items), nl, nm);
+    str_fmt1_str(msg, sizeof(msg), tr(STR_INSTALL_FROM_SD), items);
     ui_show_confirm(msg, menu_do_install);
 }
 
@@ -416,8 +463,10 @@ static void action_reset_defaults(void) {
     ui_show_confirm(tr(STR_RESET_CONFIRM), do_reset_defaults);
 }
 
-#define SET_IDX_THEME    0
-#define SET_IDX_LANGUAGE 1
+/* Language is pinned FIRST so a user who lands in a script they can't read can
+ * always find the Language selector at the top of Settings and switch back. */
+#define SET_IDX_LANGUAGE 0
+#define SET_IDX_THEME    1
 #define SET_IDX_FASTBOOT 2
 #define SET_IDX_RESET    3
 #define SET_COUNT        4
@@ -427,27 +476,30 @@ static void action_reset_defaults(void) {
  * re-introduce navigation lag. */
 static bool g_lang_dirty = false;
 
-/* One-shot boot notice after the SD install copied/updated N languages (English;
- * the modal appends "press any button"). */
+/* One-shot boot notice after the SD install copied/updated packs/modules (the modal
+ * appends "press any button"). */
 static void menu_notify_installed(int nl, int nm) {
-    static char buf[48];
-    strcpy(buf, "Updated ");
-    if (nl > 0) append_count(buf, nl, nl == 1 ? "language" : "languages");
-    if (nl > 0 && nm > 0) strcat(buf, ", ");
-    if (nm > 0) append_count(buf, nm, nm == 1 ? "module" : "modules");
+    static char buf[96];
+    char items[64];
+    build_install_phrase(items, sizeof(items), nl, nm);
+    str_fmt1_str(buf, sizeof(buf), tr(STR_UPDATED), items);
     ui_show_notice(buf);
 }
 
 /* Refresh the cached window titles after a live language change (the menu-item
  * labels themselves are accessor functions, so they re-translate on their own). */
 static void menu_apply_language(void) {
+#ifndef RTL_TEST
+    gui_rtl = i18n_is_rtl();   /* mirror the UI for RTL languages (RTL_TEST forces it on) */
+#endif
     PAGE_MAIN.title     = tr(STR_TITLE_MAIN);
     PAGE_TOOLS.title    = tr(STR_TITLE_TOOLS);
     PAGE_SETTINGS.title = tr(STR_TITLE_SETTINGS);
 }
 
 /* Cycle the active language (in sorted display order), load its pack + font live,
- * persist, re-render. */
+ * persist, re-render. Switching live (not on a later A-press) means each language's
+ * own script font loads as you scroll, so non-Latin endonyms render immediately. */
 static void ui_lang_cycle(int dir) {
     i18n_set(i18n_cycle(i18n_current(), dir));
     g_lang_dirty = true;            /* committed to /i18n/.active on Settings exit */
@@ -455,30 +507,33 @@ static void ui_lang_cycle(int dir) {
 }
 
 static const char* get_settings_label(int idx) {
+    if (idx == SET_IDX_LANGUAGE) {
+        /* "LANGUAGE: < endonym (code) >" — the endonym is in the language's own
+         * script; the ASCII "(de_DE)" suffix disambiguates the two English packs
+         * and stays readable even when the script's glyphs can't be. */
+        static char buf[96];
+        char codegrp[24], val[64];
+        int cur = i18n_current();
+        str_lcpy(codegrp, sizeof(codegrp), "(");   /* one LTR run "(de_DE)" so the code */
+        str_lcat(codegrp, sizeof(codegrp), i18n_code(cur));  /* reads L-to-R even in RTL */
+        str_lcat(codegrp, sizeof(codegrp), ")");
+        const char *vp[3] = { i18n_endonym(cur), " ", codegrp };
+        gui_compose(val, sizeof(val), vp, 3);      /* "endonym (code)" / RTL: "(code) endonym" */
+        compose_value(tr(STR_LANGUAGE), val, true, buf, sizeof(buf));
+        return buf;
+    }
     if (idx == SET_IDX_THEME) {
         /* "THEME: < X >" value-selector: A cycles forward, LEFT/RIGHT adjust.
          * Theme/module names are proper nouns, shown literally. */
-        static char buf[48];
-        strcpy(buf, tr(STR_THEME));
-        strcat(buf, ": < ");
-        strcat(buf, ui_theme_slot_name(ui_theme_slot));
-        strcat(buf, " >");
-        return buf;
-    }
-    if (idx == SET_IDX_LANGUAGE) {
-        /* "LANGUAGE: < endonym >" — endonym is in the language's own script. */
-        static char buf[48];
-        strcpy(buf, tr(STR_LANGUAGE));
-        strcat(buf, ": < ");
-        strcat(buf, i18n_endonym(i18n_current()));
-        strcat(buf, " >");
+        static char buf[96];
+        compose_value(tr(STR_THEME), ui_theme_slot_name(ui_theme_slot), true, buf, sizeof(buf));
         return buf;
     }
     if (idx == SET_IDX_FASTBOOT) {
-        static char buf[40];
-        strcpy(buf, tr(STR_FASTBOOT));
-        strcat(buf, ": ");
-        strcat(buf, settings_fastboot(board_rtc_read_settings()) ? tr(STR_ON) : tr(STR_OFF));
+        static char buf[96];
+        compose_value(tr(STR_FASTBOOT),
+                      settings_fastboot(board_rtc_read_settings()) ? tr(STR_ON) : tr(STR_OFF),
+                      false, buf, sizeof(buf));
         return buf;
     }
     return tr(STR_RESET_DEFAULTS);

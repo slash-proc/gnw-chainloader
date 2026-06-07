@@ -5,6 +5,16 @@ ifeq ($(shell test $(EXTFLASH_SIZE) -lt 16 && echo "fail"),fail)
 $(error EXTFLASH_SIZE must be at least 16 (got $(EXTFLASH_SIZE)))
 endif
 
+# Always run gnwmanager with the openocd-stderr drain enabled. GNWMANAGER_OPENOCD_DEBUG=1
+# spawns the thread that drains openocd's stderr pipe; without it that buffer fills, openocd
+# blocks on write(), and the host<->probe transfer deadlocks (a host-side plumbing hang, not
+# the hardware). VERBOSITY=debug surfaces the drained openocd trace + gnwmanager's own logs.
+# ?= so an explicit environment override still wins; the safe default is debug-everywhere.
+# (Full explanation in scripts/common/__init__.py.)
+GNWMANAGER_OPENOCD_DEBUG ?= 1
+GNWMANAGER_VERBOSITY     ?= debug
+export GNWMANAGER_OPENOCD_DEBUG GNWMANAGER_VERBOSITY
+
 # Flashing targets using gnwmanager
 flash_chainloader: all
 	@echo "Ensuring device is unswapped..."

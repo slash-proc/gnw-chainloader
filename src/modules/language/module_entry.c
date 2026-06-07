@@ -55,4 +55,6 @@ void init_module(const lang_host_t *host, lang_api_t *out) {
     out->set          = i18n_set;
     out->rediscover   = i18n_rediscover;
     out->persist      = i18n_persist_active;
+    out->code         = i18n_code;
+    out->rtl          = i18n_is_rtl;
 }

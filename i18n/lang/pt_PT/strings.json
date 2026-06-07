@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "Ferramentas",
   "STR_TITLE_SETTINGS": "Definições",
   "STR_LAUNCH": "Iniciar",
@@ -70,5 +70,25 @@
   "STR_ERR_DISK_FULL": "Disco cheio",
   "STR_ERR_TREE_DEEP": "Árvore muito profunda",
   "STR_ERR_PATH_LONG": "Caminho muito longo",
-  "STR_WRITING": "A gravar: "
+  "STR_WRITING": "A gravar: ",
+  "STR_SELECT_FS": "Escolher FS",
+  "STR_DIR": "Pasta",
+  "STR_FILE": "Ficheiro",
+  "STR_UNKNOWN": "Desconhecido",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "Leitura/Escrita",
+  "STR_MODE_RO": "Apenas leitura",
+  "STR_FILE_N": "Ficheiro %d",
+  "STR_DIV_INTFLASH": "Interna",
+  "STR_DIV_EXTFLASH": "Externa",
+  "STR_DIV_SDCARD": "Cartão SD",
+  "STR_THEME_DEFAULT": "Predefinido",
+  "STR_THEME_FALLBACK": "Alternativa",
+  "STR_NOTICE_LANGUAGES": "Idiomas",
+  "STR_N_LANGUAGES": "%d idiomas",
+  "STR_N_MODULES": "%d módulos",
+  "STR_INSTALL_FROM_SD": "Instalar %s do SD?",
+  "STR_UPDATED": "%s atualizado",
+  "STR_OFW_SUFFIX": "Firmware %s",
+  "STR_DECIMAL_SEP": ","
 }

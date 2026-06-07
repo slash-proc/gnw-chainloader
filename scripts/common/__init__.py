@@ -18,11 +18,22 @@ the originals, which assumed the CWD was the repo root.
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 # scripts/common/__init__.py -> parents[2] is the repository root.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# Always run gnwmanager in debug verbosity. GNWMANAGER_OPENOCD_DEBUG=1 is not just for
+# logging: it spawns the thread that drains openocd's stderr pipe (openocd is launched
+# stdout=DEVNULL, stderr=PIPE). Without that drain the ~64 KB stderr buffer fills, openocd
+# blocks on write(), and the host<->probe transfer deadlocks (it looks like a "hang" but
+# is pure host-side plumbing, not the hardware). GNWMANAGER_VERBOSITY=debug then surfaces
+# those drained lines + gnwmanager's own logs. setdefault so an explicit override still
+# wins, but the safe default is debug-everywhere. Set before any OpenOCDBackend is opened.
+os.environ.setdefault("GNWMANAGER_OPENOCD_DEBUG", "1")
+os.environ.setdefault("GNWMANAGER_VERBOSITY", "debug")
 
 # Make the vendored gnwmanager submodule importable (ZeldaGnW / MarioGnW / OpenOCDBackend).
 _GNWMANAGER = REPO_ROOT / "gnwmanager"

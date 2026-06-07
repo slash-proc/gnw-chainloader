@@ -52,11 +52,25 @@ static void emit_group(const char *label, bool (*match)(const partition_info_t *
     }
 }
 
+/* Divider labels render as "-<word>-": the leading/trailing '-' is the divider
+ * sentinel ui_list keys on (kept literal); the inner word is translated. Static so
+ * the pointer emit_group stores outlives every draw, and rebuilt each call so a live
+ * language switch re-translates them. */
+static char div_int[40], div_ext[40], div_sd[40];
+static void make_divider(char *buf, int cap, string_id_t id) {
+    str_lcpy(buf, cap, "-");
+    str_lcat(buf, cap, tr(id));
+    str_lcat(buf, cap, "-");
+}
+
 static void rebuild_virtual_list(void) {
     g_part_view.virtual_count = 0;
-    emit_group("-INTFLASH-", pred_internal);
-    emit_group("-EXTFLASH-", pred_external);
-    emit_group("-SD CARD-", pred_sd);
+    make_divider(div_int, sizeof(div_int), STR_DIV_INTFLASH);
+    make_divider(div_ext, sizeof(div_ext), STR_DIV_EXTFLASH);
+    make_divider(div_sd,  sizeof(div_sd),  STR_DIV_SDCARD);
+    emit_group(div_int, pred_internal);
+    emit_group(div_ext, pred_external);
+    emit_group(div_sd,  pred_sd);
 }
 
 static const char* partition_get_label(int idx) {
@@ -135,28 +149,33 @@ static void partition_draw_right_pane(int selected_idx, uint32_t selected_tick) 
     
     int p_idx = g_part_view.virtual_items[selected_idx].partition_idx;
     partition_info_t* p = partition_get_info(p_idx);
-    gui_draw_text(198, 40, tr(STR_LBL_TARGET), COLOR_FG);
+    /* Detail column: x=198 in LTR; the whole 110px-wide column mirrors to the left in
+     * RTL (the list swaps to the right via ui_list_draw). Labels/values right-align in
+     * RTL but LTR runs (hex, sizes) still read left-to-right. */
+    const int pw = 110;
+    int px = gui_mirror_x(198, pw, 0, SCREEN_WIDTH);
+    gui_draw_text_aligned(px, 40, pw, tr(STR_LBL_TARGET), COLOR_FG, false, 0);
 
     const char* target_name = (strcmp(p->type, "FREE") == 0) ? tr(STR_FREE_SPACE) : p->type;
-    gui_draw_text_marquee(198, 55, 110, target_name, COLOR_FG, true, selected_tick);
+    gui_draw_text_aligned(px, 55, pw, target_name, COLOR_FG, true, selected_tick);
 
-    gui_draw_text(198, 75, tr(STR_LBL_SIZE), COLOR_FG);
+    gui_draw_text_aligned(px, 75, pw, tr(STR_LBL_SIZE), COLOR_FG, false, 0);
     char size_buf[16];
     if (partition_is_sd(p)) format_size_sectors(p->size, size_buf);  /* SD: size is sectors */
     else                    format_size(p->size, size_buf);
-    gui_draw_text(198, 90, size_buf, COLOR_FG);
+    gui_draw_text_aligned(px, 90, pw, size_buf, COLOR_FG, false, 0);
 
-    gui_draw_text(198, 110, tr(STR_LBL_ADDR), COLOR_FG);
+    gui_draw_text_aligned(px, 110, pw, tr(STR_LBL_ADDR), COLOR_FG, false, 0);
     if (partition_is_sd(p)) {
-        gui_draw_text(198, 125, "SD", COLOR_FG);   /* sentinel addr is meaningless */
+        gui_draw_text_aligned(px, 125, pw, "SD", COLOR_FG, false, 0);   /* sentinel addr is meaningless */
     } else {
         char addr_buf[16];
         hex_to_str(p->address, addr_buf, 8);
-        gui_draw_text(198, 125, addr_buf, COLOR_FG);
+        gui_draw_text_aligned(px, 125, pw, addr_buf, COLOR_FG, false, 0);
     }
 
-    gui_draw_text(198, 145, tr(STR_LBL_DETAILS), COLOR_FG);
-    gui_draw_text_marquee(198, 160, 110, p->details, COLOR_FG, true, selected_tick);
+    gui_draw_text_aligned(px, 145, pw, tr(STR_LBL_DETAILS), COLOR_FG, false, 0);
+    gui_draw_text_aligned(px, 160, pw, p->details, COLOR_FG, true, selected_tick);
 }
 
 /* Land the selection on the first non-divider row. */

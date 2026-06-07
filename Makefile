@@ -461,6 +461,7 @@ i18n: | $(I18N_OUT)
 	$(COOK_FONT) blob --script zh_hans --chars $(I18N_TMP)/zh_hans.chars
 	$(COOK_FONT) blob --script zh_hant --chars $(I18N_TMP)/zh_hant.chars
 	$(COOK_FONT) blob --script ko      --chars $(I18N_TMP)/ko.chars
+	$(COOK_FONT) blob --script arabic  --chars $(I18N_TMP)/arabic.chars
 
 $(I18N_OUT):
 	mkdir -p $@/fonts
@@ -499,6 +500,14 @@ endif
 ABI_SELFTEST ?= 0
 ifneq ($(ABI_SELFTEST),0)
 C_DEFS += -DABI_SELFTEST
+endif
+
+# Force the right-to-left UI mirror on (gui_rtl=1) regardless of the active language,
+# so the RTL layout can be verified on hardware with English before any Arabic pack
+# exists. Opt-in only: `make RTL_TEST=1 ...`. Off by default; zero bytes in a release.
+RTL_TEST ?= 0
+ifneq ($(RTL_TEST),0)
+C_DEFS += -DRTL_TEST
 endif
 
 # Boot-timing instrumentation (scripts read g_boot_bench over SWD). Opt-in only:

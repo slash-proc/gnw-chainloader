@@ -548,7 +548,12 @@ translation/font asset can never block the boot path, so the design layers three
 independent fallbacks — in-core English text, English per-string, and in-core
 ASCII glyphs — each degrading to the one below. Only ~1.5 KB of the 40 KB binary
 is spent on the feature; the translations and the fonts they need live on the
-device filesystem, fetched at runtime.
+device filesystem, fetched at runtime. Right-to-left languages (Arabic, Farsi)
+**mirror the layout** rather than reorder glyphs, their text reshaped and bidi-ordered
+**offline at cook time** (no runtime shaper); and a non-Latin font beyond the active
+language **loads on demand** by Unicode range, so e.g. a CJK filename renders under an
+English UI. See [docs/i18n.md](docs/i18n.md) for the layer detail, formats, the RTL
+mirror, the `gui_api` module surface, and the on-demand font slots.
 
 ### Implementation
 

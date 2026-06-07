@@ -31,12 +31,20 @@ REPO = Path(__file__).resolve().parents[2]
 
 
 def all_codes():
-    return ["en_US"] + sorted(p.name for p in (REPO / "i18n" / "lang").iterdir()
-                              if (p / "strings.json").is_file())
+    # The SELECTABLE languages: every real pack dir (en_US/en_UK included). The hidden
+    # in-core "en" sentinel is never shown once an English pack exists, so it is not a
+    # cycle target. De-duplicated (en_US has a dir now, so no "en_US" + dirs prefix).
+    return sorted(p.name for p in (REPO / "i18n" / "lang").iterdir()
+                  if (p / "strings.json").is_file())
 
 
 def detect(sc, codes):
-    """Which candidate language's SETTINGS title renders on `sc` (= active language)?"""
+    """Which candidate language is active on `sc` (the Language row)? Prefer the ASCII
+    "(code)" suffix the selector renders -- it disambiguates en_US/en_UK (both titled
+    "Settings") and matches even for non-Latin scripts -- then fall back to the title."""
+    for c in codes:
+        if sc.has("(" + c + ")", thresh=0.72):
+            return c
     for c in codes:
         lbl = strings_for(c).get("STR_TITLE_SETTINGS", "").strip()
         if lbl and sc.has(lbl):
@@ -69,8 +77,13 @@ def main():
             if len(results) >= len(codes):
                 break
             sc = ocrnav.shot(dev)
+            # Suffix first across ALL candidates (so en_US isn't mis-read as en_UK,
+            # whose "Settings" title also matches the en_US screen), then title.
             cur = next((c for c in codes if c not in results
-                        and sc.has(strings_for(c)["STR_TITLE_SETTINGS"].strip())), None)
+                        and sc.has("(" + c + ")", thresh=0.72)), None)
+            if cur is None:
+                cur = next((c for c in codes if c not in results
+                            and sc.has(strings_for(c)["STR_TITLE_SETTINGS"].strip())), None)
             if cur:
                 cs = strings_for(cur)
                 results[cur] = {tid: bool(cs.get(tid, "").strip()) and sc.has(cs[tid].strip())
@@ -78,9 +91,11 @@ def main():
             dev.button_press([ri.BTN_RIGHT])
             h.settle(0.3)
 
-        # Restore the original language, then leave Settings (commits .active).
+        # Restore the original language, then leave Settings (commits .active). Match
+        # the start code's "(code)" suffix so en_US/en_UK restore precisely (their
+        # shared "Settings" title would otherwise stop one language early).
         for _ in range(len(codes) + 1):
-            if ocrnav.shot(dev).has(s0["STR_TITLE_SETTINGS"].strip()):
+            if ocrnav.shot(dev).has("(" + start + ")", thresh=0.72):
                 break
             dev.button_press([ri.BTN_RIGHT])
             h.settle(0.3)

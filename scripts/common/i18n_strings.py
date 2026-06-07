@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Shared helpers for the i18n device tests: read the device's active language
-code over SWD, and load any language's UI strings — so a test can OCR-navigate /
-validate by the text the device is actually showing, in any language."""
+"""Shared helpers for the i18n device tests: OCR-detect the device's active
+language (see detect_language) and load any language's UI strings — so a test can
+OCR-navigate / validate by the text the device is actually showing, in any language.
+
+Detection is by OCR, never by SWD symbol read: the active-language state lives in the
+PIE language module, not the core, so the old g_current / g_langs symbols are not in the
+core ELF. detect_language matches the ASCII "(code)" suffix the Language selector renders,
+which template-matches even when the endonym is Arabic / CJK."""
 import json
 import re
 from pathlib import Path
-
-from common import harness as h
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -21,21 +24,14 @@ def english_strings() -> dict:
 
 
 def strings_for(code: str) -> dict:
-    """{STR_id: text} for locale `code` — its translations over English fallback."""
+    """{STR_id: text} for locale `code` — its translations over English fallback.
+    en_US/en_UK are real packs now (mixed-case English), so load any code that has a
+    strings.json; the reserved "en" sentinel has no dir and stays the baked English."""
     s = english_strings()
     d = REPO / "i18n" / "lang" / code / "strings.json"
-    if code != "en_US" and d.exists():
+    if d.exists():
         s.update({k: v for k, v in json.loads(d.read_text()).items() if v})
     return s
-
-
-def active_code(backend) -> str:
-    """The device's active language code, read from g_current / g_langs over SWD.
-    g_langs entries are { char code[16]; char endonym[32]; char script[16]; }."""
-    cur = h.read_u32_symbol(backend, "g_current") & 0xFF
-    addr = h.resolve_symbol("g_langs")
-    raw = bytes(backend.read_memory(addr + cur * 64, 16))
-    return raw.split(b"\x00")[0].decode("ascii", "replace") or "en_US"
 
 
 def label(code: str, str_id: str) -> str:
@@ -68,10 +64,10 @@ def detect_language(dev, wake: bool = True):
     Falls back to the best-scoring Settings title for screens that don't show the
     Language row. Non-Latin endonyms/titles (CJK, Cyrillic, Greek) don't yet
     template-match, so those languages are detected only weakly if at all -- tracked
-    with the broader non-Latin OCR work. Replaces active_code(): g_current/g_langs
-    moved into the PIE language module and are no longer SWD-readable from the core.
-    Pass wake=False to detect on the current frame without re-waking (e.g. inside a
-    cycle loop).
+    with the broader non-Latin OCR work. Detection is by OCR, not a symbol read:
+    g_current / g_langs moved into the PIE language module and are no longer
+    SWD-readable from the core. Pass wake=False to detect on the current frame
+    without re-waking (e.g. inside a cycle loop).
     """
     from common import harness as h
     from common import ocrnav
@@ -80,12 +76,18 @@ def detect_language(dev, wake: bool = True):
         h.settle(0.3)
     sc = ocrnav.shot(dev)
 
-    # Primary: the unique endonym on the Language row. Endonyms don't collide, so
-    # the first one over a confident threshold is conclusive -- early-exit rather
-    # than scoring all 16 every call (that is far too slow inside set_language's
-    # cycle loop, which calls this ~20 times). Skip non-Latin endonyms: they don't
-    # template-match yet and their large CJK/Cyrillic/Greek masks are the slowest to
-    # scan, so excluding them keeps each call cheap.
+    # Primary: the ASCII "(code)" suffix the Language selector now renders next to the
+    # endonym ("< English (en_US) >", "< 中文 (zh_CN) >"). Being ASCII it template-
+    # matches even for non-Latin scripts whose glyphs don't, and it cleanly separates
+    # en_US from en_UK (identical "English" endonyms). The reserved "en" sentinel only
+    # shows when no English pack is installed.
+    for code in [e["code"] for e in langs_meta()] + ["en"]:
+        if sc.has("(" + code + ")", thresh=0.72):
+            return code, strings_for(code)
+
+    # Secondary: the unique Latin endonym, for a Language row whose suffix didn't OCR.
+    # Endonyms don't collide across distinct languages (en_US/en_UK do, but the suffix
+    # above already separated them). Skip non-Latin endonyms (they don't match yet).
     for e in langs_meta():
         endo = e["endonym"]
         if _is_latin(endo) and sc.has(endo, thresh=0.72):
@@ -94,10 +96,11 @@ def detect_language(dev, wake: bool = True):
     # Fallback (a screen without the Language row): the best-scoring -- not the
     # first-matching -- Latin Settings title. Best-match avoids the German/Dutch
     # title collision ("Einstellungen" vs "Instellingen"); non-Latin titles are
-    # skipped for the same speed reason as the endonyms.
+    # skipped for the same speed reason as the endonyms. Candidates are the real
+    # i18n/lang/* dirs plus the "en" sentinel, de-duplicated (en_US has a dir now).
     best_code, best_score = None, 0.0
-    codes = ["en_US"] + sorted(p.name for p in (REPO / "i18n" / "lang").iterdir()
-                               if (p / "strings.json").is_file())
+    codes = sorted({"en"} | {p.name for p in (REPO / "i18n" / "lang").iterdir()
+                             if (p / "strings.json").is_file()})
     for code in codes:
         lbl = strings_for(code).get("STR_TITLE_SETTINGS", "").strip()
         if not lbl or not _is_latin(lbl):

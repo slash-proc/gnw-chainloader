@@ -49,6 +49,7 @@ uint16_t gui_fg_color = RGB565(0xD0, 0xD4, 0xD8);
 uint16_t gui_accent_color = RGB565(0x00, 0xA0, 0xA0);
 uint16_t gui_border_color = RGB565(0xD0, 0xD4, 0xD8);
 uint16_t gui_footer_color = RGB565(0x14, 0x16, 0x1A);
+/* gui_rtl + gui_mirror_x live in gui_text.c (HAL-free, host-testable). */
 
 static void gui_spi2_init(void) {
     __HAL_RCC_SPI2_CLK_ENABLE();
@@ -243,7 +244,33 @@ void gui_draw_char(int x, int y, uint32_t cp, uint16_t color) {
 }
 
 void gui_draw_selector(int x, int y, uint16_t color) {
-    gui_draw_char(x, y, '>', color);
+    gui_draw_char(x, y, gui_rtl ? '<' : '>', color);   /* the one glyph the RTL flip touches */
+}
+
+/* Accessors so a PIE module (which can't read core globals directly) can query the
+ * direction + the active theme colors through the gui_api vtable. */
+bool gui_is_rtl(void)         { return gui_rtl; }
+uint16_t gui_color_bg(void)     { return gui_bg_color; }
+uint16_t gui_color_fg(void)     { return gui_fg_color; }
+uint16_t gui_color_accent(void) { return gui_accent_color; }
+uint16_t gui_color_border(void) { return gui_border_color; }
+uint16_t gui_color_footer(void) { return gui_footer_color; }
+
+#include "utils.h"   /* str_lcat */
+/* Join logical-order string `pieces` into `buf` in DISPLAY order: left-to-right for an
+ * LTR language, or — for RTL — the pieces emitted in REVERSE so the right-anchored row
+ * reads correctly. Each piece keeps its own internal order: an Arabic fragment is already
+ * pre-shaped to visual order at cook time, and an LTR run (a number, "(de_DE)", a Latin
+ * name) stays left-to-right as one piece. This is the single mixed-content composition
+ * point that makes runtime label+value+number strings bidi-correct (the cook can't see
+ * them). Bounded; NULL pieces are skipped. Identity ordering when !gui_rtl. */
+void gui_compose(char *buf, int cap, const char *const *pieces, int n) {
+    if (cap > 0) buf[0] = '\0';
+    if (gui_rtl) {
+        for (int i = n - 1; i >= 0; i--) if (pieces[i]) str_lcat(buf, cap, pieces[i]);
+    } else {
+        for (int i = 0; i < n; i++) if (pieces[i]) str_lcat(buf, cap, pieces[i]);
+    }
 }
 
 /*
@@ -335,6 +362,20 @@ void gui_draw_text_marquee(int x, int y, int max_w, const char *str, uint16_t co
         }
         cursor_x += g.w;
     }
+}
+
+/* Draw text aligned to the reading edge of [x, x+w]: left in LTR, right in RTL. A
+ * string that fits is right-anchored in RTL (drawn at x+w-text_w; the marquee clip
+ * extending past x+w is harmless, a lone string has nothing to its right); an
+ * overflowing string stays left-anchored and marquee-scrolls. Glyphs are never
+ * reordered, so an embedded LTR run (filename, number, "(code)") still reads L-to-R. */
+void gui_draw_text_aligned(int x, int y, int w, const char *str, uint16_t color, bool is_active, uint32_t tick_offset) {
+    int ax = x;
+    if (gui_rtl) {
+        int tw = gui_text_width(str);
+        if (tw < w) ax = x + w - tw;
+    }
+    gui_draw_text_marquee(ax, y, w, str, color, is_active, tick_offset);
 }
 
 void gui_draw_rect(int x, int y, int w, int h, uint16_t color) {

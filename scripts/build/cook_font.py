@@ -48,6 +48,34 @@ FONT_DIR = os.path.join(REPO, "i18n", "fonts")
 STYLE = "12px-monospaced"
 PPEM = 12
 
+# Per-script overrides for a script whose face is NOT the Fusion Pixel <style> family:
+# (filename, ppem, supersample). "arabic" (also used for Farsi/Persian) uses Vazirmatn
+# Regular — a quality hinted Persian/Arabic OUTLINE font (SIL OFL 1.1) — at ppem 14 with
+# 4x supersampling (render at 56px, then area-downscale + threshold). Supersampling keeps
+# the light Regular strokes clean and consistent at 1bpp, which a "pixel" Arabic font
+# can't manage; the 19px band fits the 20px menu rows and the weight matches the Latin
+# face. See docs/i18n.md. Other scripts use the Fusion Pixel <style> face at SS 1.
+SCRIPT_FONT = {
+    # (filename, ppem, supersample, raise): `raise` lifts the glyphs up by N pixels
+    # (a signed ref_top in the .fnt) so a tall-ascent outline face like Vazirmatn sits
+    # on the row baseline instead of a couple pixels low.
+    "arabic": ("vazirmatn-regular.ttf", 14, 4, 6),
+}
+PPEM_OVERRIDE = None    # --ppem override (calibration)
+SS_OVERRIDE = None      # --ss override (calibration)
+RAISE_OVERRIDE = None   # --raise override (calibration)
+SUPERSAMPLE = 1         # effective SS for the current cook; set from ss_for() per script
+_HI_CACHE = {}
+
+
+def _hi_font(font, ss):
+    key = (font.path, font.size, ss)
+    f = _HI_CACHE.get(key)
+    if f is None:
+        f = ImageFont.truetype(font.path, font.size * ss)
+        _HI_CACHE[key] = f
+    return f
+
 # Printable ASCII for the in-core fallback font.
 ASCII_LO, ASCII_HI = 0x20, 0x7E
 
@@ -59,36 +87,73 @@ def set_style(style):
 
 
 def font_path(script):
+    spec = SCRIPT_FONT.get(script)
+    if spec:
+        return os.path.join(FONT_DIR, spec[0])
     return os.path.join(FONT_DIR, f"fusion-pixel-{STYLE}-{script}.otf")
+
+
+def ppem_for(script):
+    if PPEM_OVERRIDE:
+        return PPEM_OVERRIDE
+    spec = SCRIPT_FONT.get(script)
+    return spec[1] if spec else PPEM
+
+
+def ss_for(script):
+    if SS_OVERRIDE:
+        return SS_OVERRIDE
+    spec = SCRIPT_FONT.get(script)
+    return spec[2] if (spec and len(spec) >= 3) else 1
+
+
+def raise_for(script):
+    if RAISE_OVERRIDE is not None:
+        return RAISE_OVERRIDE
+    spec = SCRIPT_FONT.get(script)
+    return spec[3] if (spec and len(spec) >= 4) else 0
 
 
 def load(script):
     p = font_path(script)
     if not os.path.exists(p):
         sys.exit(f"missing font: {p}")
-    return ImageFont.truetype(p, PPEM)
+    return ImageFont.truetype(p, ppem_for(script))
 
 
 def raster_glyph(font, ascent, cellH, ch):
     """Render one character at the native grid. Returns (advance, rows[]) where
     each row is an int bitmask, bit (msb-first) col c = leftmost pixel. The cell
     is `advance` wide x cellH tall, ink placed at its natural side bearing."""
-    adv = round(font.getlength(ch))
-    if adv <= 0:
-        return 0, [0] * cellH
-    # Render onto a canvas a bit wider than the advance so nothing clips, with
-    # the pen origin at x=0 and the ascender line at y=0 (anchor 'la').
-    pad = 4
-    img = Image.new("L", (adv + pad, cellH), 0)
-    d = ImageDraw.Draw(img)
-    d.text((0, 0), ch, font=font, fill=255, anchor="la")
+    # The canvas is one extra descent taller than the nominal cell so a deep glyph bowl
+    # (e.g. Arabic final noon/jeem/yeh below the font descent line) is captured, not cut
+    # at the bottom edge. trim_cell() then keeps only the rows any glyph inks, so the
+    # extra rows are free for scripts that don't use them (Latin/CJK unchanged).
+    canvasH = cellH + (cellH - ascent)   # target rows = ascent + 2*descent
+    ss = SUPERSAMPLE
+    rfont = _hi_font(font, ss) if ss > 1 else font
+    adv_hi = round(rfont.getlength(ch))
+    if adv_hi <= 0:
+        return 0, [0] * canvasH
+    # Render at ppem*SS (pen origin x=0, ascender at y=0 via anchor 'la'), then area-
+    # downscale to the target grid: LANCZOS averages the high-res coverage into smooth,
+    # consistent stems, and the >=128 threshold turns 50%+ coverage into ink. This is the
+    # upscale-then-downscale path that tames a quality outline font's small-size jaggies.
+    pad = 4 * ss
+    img = Image.new("L", (adv_hi + pad, canvasH * ss), 0)
+    ImageDraw.Draw(img).text((0, 0), ch, font=rfont, fill=255, anchor="la")
+    if ss > 1:
+        img = img.resize(((adv_hi + pad) // ss, canvasH), Image.LANCZOS)
+    adv = round(adv_hi / ss)
     px = img.load()
+    W, H = img.size
     rows = []
-    for y in range(cellH):
+    for y in range(H):
         bits = 0
-        for x in range(adv):
+        for x in range(min(adv, W)):
             if px[x, y] >= 128:
-                bits |= 1 << (15 - x)  # msb-first in a 16-bit row
+                bits |= 1 << x  # column x at bit x (LSB-first); arbitrary width, so
+                                # glyphs wider than 16px (Arabic) don't overflow
         rows.append(bits)
     return adv, rows
 
@@ -108,10 +173,12 @@ def trim_cell(glyphs, cellH):
 
 
 def cmd_probe(args):
+    global SUPERSAMPLE
+    SUPERSAMPLE = ss_for(args.script)
     font = load(args.script)
     ascent, descent = font.getmetrics()
     cellH = ascent + descent
-    print(f"script={args.script} ppem={PPEM} ascent={ascent} descent={descent} cellH={cellH}")
+    print(f"script={args.script} ppem={ppem_for(args.script)} ascent={ascent} descent={descent} cellH={cellH}")
     sample = args.text or "AaBbGg0123 !?@#áñü€©"
     maxw = 0
     glyphs = []
@@ -124,7 +191,7 @@ def cmd_probe(args):
     for ch, adv, rows in glyphs:
         print(f"\n'{ch}' U+{ord(ch):04X} adv={adv}")
         for r in rows:
-            line = "".join("#" if (r >> (15 - x)) & 1 else "." for x in range(maxw))
+            line = "".join("#" if (r >> x) & 1 else "." for x in range(maxw))
             print("  " + line)
 
 
@@ -164,6 +231,8 @@ extern const gui_glyph_t gui_font_ascii[GUI_FONT_LAST - GUI_FONT_FIRST + 1];
 
 
 def cmd_ascii(args):
+    global SUPERSAMPLE
+    SUPERSAMPLE = ss_for("latin")
     font = load("latin")
     ascent, descent = font.getmetrics()
     cellH = ascent + descent
@@ -181,7 +250,7 @@ def cmd_ascii(args):
     ]
     for ch, adv, rows in glyphs:
         band = rows[top:top + H]
-        body = ", ".join(f"0x{(r >> 8) & 0xFF:02X}" for r in band)  # high byte = cols 0..7
+        body = ", ".join(f"0x{row_bytes(r, 1)[0]:02X}" for r in band)  # one byte = cols 0..7
         disp = ch if 0x20 < ord(ch) < 0x7F else "SPC"
         # Quote the glyph in the trailing comment so a backslash glyph can't act
         # as a line continuation (-Wcomment).
@@ -201,13 +270,18 @@ def cmd_ascii(args):
 
 
 def row_bytes(r, stride):
-    """Pack a 16-bit row mask (bit 15-x = column x) into `stride` MSB-first bytes."""
-    return bytes(((r >> (8 * (1 - b))) & 0xFF) for b in range(stride))
+    """Pack a row mask (bit x = column x, LSB-first) into `stride` MSB-first bytes
+    (bit 0x80 = leftmost column in each byte), so glyphs wider than 16px (Arabic at
+    its native ppem) pack correctly — the device reads ceil(w/8) bytes per row."""
+    return bytes(sum((0x80 >> k) for k in range(8) if (r >> (b * 8 + k)) & 1)
+                 for b in range(stride))
 
 
 def cmd_blob(args):
     """Emit build/i18n/<script>.fnt: a sorted codepoint index + packed 1bpp
     bitmaps the device reads whole into RAM (no on-device rasterizer)."""
+    global SUPERSAMPLE
+    SUPERSAMPLE = ss_for(args.script)
     font = load(args.script)
     cmap = TTFont(font_path(args.script)).getBestCmap()
     ascent, descent = font.getmetrics()
@@ -241,8 +315,10 @@ def cmd_blob(args):
 
     w_pad = (-gc) % 4
     bitmaps_off = 12 + 4 * gc + gc + w_pad + 4 * gc
+    raise_px = raise_for(args.script)
+    ref_top = (top - raise_px) & 0xFF      # signed (i8) on the device: lifts glyphs up by raise_px
     blob = bytearray()
-    blob += struct.pack("<IHBBI", FNT_MAGIC, gc, H, top, bitmaps_off)
+    blob += struct.pack("<IHBBI", FNT_MAGIC, gc, H, ref_top, bitmaps_off)
     blob += struct.pack(f"<{gc}I", *cps_out)
     blob += bytes(widths) + bytes(w_pad)
     blob += struct.pack(f"<{gc}I", *offsets)
@@ -252,7 +328,7 @@ def cmd_blob(args):
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "wb") as f:
         f.write(blob)
-    print(f"wrote {out}: {gc} glyphs, cellH={H}, ref_top={top}, "
+    print(f"wrote {out}: {gc} glyphs, cellH={H}, ref_top={top - raise_px} (raise {raise_px}), "
           f"{len(bitmaps)} bitmap bytes, {len(blob)} total")
 
 
@@ -261,6 +337,13 @@ def main():
     ap.add_argument("--style", default="10px-proportional",
                     help="font variant: <px>px-<proportional|monospaced> "
                          "(picks i18n/fonts/fusion-pixel-<style>-<script>.otf)")
+    ap.add_argument("--ppem", type=int, default=None,
+                    help="override the rasterization ppem (calibrate a pixel grid)")
+    ap.add_argument("--ss", type=int, default=None,
+                    help="override the per-script supersample factor (render at ppem*SS "
+                         "then area-downscale; smooths a quality outline font's stems)")
+    ap.add_argument("--raise", type=int, default=None, dest="raise_px",
+                    help="override the per-script vertical raise in pixels (lift glyphs up)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("probe")
     p.add_argument("--script", default="latin")
@@ -277,6 +360,10 @@ def main():
     b.set_defaults(func=cmd_blob)
     args = ap.parse_args()
     set_style(args.style)
+    global PPEM_OVERRIDE, SS_OVERRIDE, RAISE_OVERRIDE
+    PPEM_OVERRIDE = args.ppem
+    SS_OVERRIDE = args.ss        # None unless --ss given; ss_for() uses the per-script value
+    RAISE_OVERRIDE = args.raise_px
     args.func(args)
 
 

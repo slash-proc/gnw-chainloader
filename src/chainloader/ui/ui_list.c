@@ -37,6 +37,7 @@ void ui_list_init(ui_list_t *list, const char *title, int num_items,
     list->draw_right_pane = NULL;
     list->on_back = NULL;
     list->on_adjust = NULL;
+    list->on_game = NULL;
     list->is_enabled = NULL;
 }
 
@@ -98,6 +99,14 @@ void ui_list_update(ui_list_t *list) {
         if (input_is_repeating(INPUT_RIGHT)) { list->on_adjust(list->selected, +1); list->selected_tick = HAL_GetTick(); }
     }
 
+    /* GAME on the selected row: a distinct side-action (e.g. flash an OFW to preview
+     * its theme). The hook itself gates which rows respond, so no item_selectable
+     * requirement here. */
+    if (input_just_pressed(INPUT_GAME) && list->on_game) {
+        list->on_game(list->selected);
+        return;
+    }
+
     if (input_just_pressed(INPUT_A) && item_selectable(list, list->selected)) {
         if (list->on_action) {
             list->on_action(list->selected);
@@ -117,7 +126,7 @@ void ui_list_draw(ui_list_t *list, int x, int y, int w, int h) {
     uint32_t ticks = HAL_GetTick();
 
     if (list->is_split) {
-        gui_draw_rect(x + 188, y, 1, h, COLOR_BORDER);
+        gui_draw_rect(gui_mirror_x(x + 188, 1, x, w), y, 1, h, COLOR_BORDER);
         if (list->draw_right_pane && list->num_items > 0) {
             list->draw_right_pane(list->selected, list->selected_tick);
         }
@@ -125,6 +134,9 @@ void ui_list_draw(ui_list_t *list, int x, int y, int w, int h) {
 
     int start_x = list->is_split ? (x + 12) : (x + 22);
     int max_w = list->is_split ? 166 : (w - 32);
+    /* RTL: mirror the text region within the list's own box, so rows right-align and
+     * the cursor/scrollbar swap sides. Identity in LTR (row_x == start_x). */
+    int row_x = gui_mirror_x(start_x, max_w, x, w);
 
     // Centering vertically based on actual drawn item height (excluding split views)
     int count = list->visible_lines;
@@ -153,19 +165,22 @@ void ui_list_draw(ui_list_t *list, int x, int y, int w, int h) {
         const char *label = list->get_label(idx);
 
         if (idx == list->selected) {
-            if (list->is_split || !theme_draw_selector(x, item_y, ticks)) {
-                gui_draw_selector(list->is_split ? x : (x + 6), item_y, COLOR_ACCENT);
+            /* Cursor + themed selector mirror to the row's far edge (right in RTL). */
+            int plain_x = gui_mirror_x(list->is_split ? x : (x + 6), 6, x, w);
+            int theme_x = gui_mirror_x(x, 16, x, w);
+            if (list->is_split || !theme_draw_selector(theme_x, item_y, ticks)) {
+                gui_draw_selector(plain_x, item_y, COLOR_ACCENT);
             }
         }
-        
+
         if (label[0] == '-') {
-            int text_w = gui_text_width(label);
-            gui_draw_text(start_x + (max_w - text_w) / 2, item_y, label, COLOR_ACCENT);
+            int text_w = gui_text_width(label);   /* dividers stay centered in the (mirrored) region */
+            gui_draw_text(row_x + (max_w - text_w) / 2, item_y, label, COLOR_ACCENT);
         } else {
             /* Disabled rows are shown greyed (and aren't selectable). */
             uint16_t col = (list->is_enabled && !list->is_enabled(idx))
                          ? RGB565(0x68, 0x6C, 0x70) : COLOR_FG;
-            gui_draw_text_marquee(start_x, item_y, max_w, label, col, (idx == list->selected), list->selected_tick);
+            gui_draw_text_aligned(row_x, item_y, max_w, label, col, (idx == list->selected), list->selected_tick);
         }
     }
 
@@ -176,7 +191,7 @@ void ui_list_draw(ui_list_t *list, int x, int y, int w, int h) {
     if (list->num_items > list->visible_lines &&
         (ticks - list->scroll_tick) < SCROLLBAR_LINGER_MS) {
         const int bar_w = 4;
-        int bar_x = list->is_split ? (x + 182) : (x + w - bar_w - 2);
+        int bar_x = gui_mirror_x(list->is_split ? (x + 182) : (x + w - bar_w - 2), bar_w, x, w);
         int track_y = start_y - 2;
         int track_h = list->visible_lines * 20;
 

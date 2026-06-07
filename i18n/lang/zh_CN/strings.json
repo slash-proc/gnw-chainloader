@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "工具",
   "STR_TITLE_SETTINGS": "设置",
   "STR_LAUNCH": "启动",
@@ -70,5 +70,28 @@
   "STR_ERR_DISK_FULL": "磁盘已满",
   "STR_ERR_TREE_DEEP": "层级过深",
   "STR_ERR_PATH_LONG": "路径过长",
-  "STR_WRITING": "写入: "
+  "STR_WRITING": "写入: ",
+  "STR_SELECT_FS": "选择文件系统",
+  "STR_DIR": "文件夹",
+  "STR_FILE": "文件",
+  "STR_UNKNOWN": "未知",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "读写",
+  "STR_MODE_RO": "只读",
+  "STR_FILE_N": "文件 %d",
+  "STR_DIV_INTFLASH": "内部",
+  "STR_DIV_EXTFLASH": "外部",
+  "STR_DIV_SDCARD": "SD卡",
+  "STR_THEME_DEFAULT": "默认",
+  "STR_THEME_FALLBACK": "备用",
+  "STR_NOTICE_LANGUAGES": "语言",
+  "STR_N_LANGUAGES": "%d 种语言",
+  "STR_N_MODULES": "%d 个模块",
+  "STR_INSTALL_FROM_SD": "从SD安装%s？",
+  "STR_UPDATED": "已更新%s",
+  "STR_OFW_SUFFIX": "%s 固件",
+  "STR_DECIMAL_SEP": ".",
+  "_adopted": [
+    "STR_DECIMAL_SEP"
+  ]
 }

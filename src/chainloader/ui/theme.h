@@ -45,6 +45,8 @@ typedef enum { THEME_OFW_NONE = 0, THEME_OFW_MARIO, THEME_OFW_ZELDA } theme_ofw_
 /* Services the core gives a theme module so it can blit sprites without pulling
  * in core internals. The module reads framebuffer()/palette/tileset and writes
  * pixels itself (its own blitter — the core's was stripped to save flash). */
+struct gui_api;   /* system/gui_api.h — the core's RTL-aware GUI-services vtable */
+
 typedef struct {
     uint32_t (*get_tick)(void);
     void (*register_theme)(theme_driver_t *t);
@@ -52,6 +54,10 @@ typedef struct {
     uint16_t *(*framebuffer)(void);   /* current 320x240 RGB565 back buffer (swaps each frame) */
     const uint16_t *palette;          /* dynamic_palette (OFW colors) */
     const uint8_t  *tileset;          /* dynamic_tileset (OFW sprite tiles) */
+    /* APPENDED (backward-compatible: an older theme module ignores it): the core GUI
+     * services so a theme module can draw RTL-aware text/primitives + modals, not just
+     * blit sprites. include system/gui_api.h to use it. */
+    const struct gui_api *gui;
 } theme_host_api_t;
 
 /* Load the bundled theme module (if present) and re-apply the persisted slot so

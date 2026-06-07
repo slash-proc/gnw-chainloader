@@ -52,6 +52,56 @@ void int_to_str_w(int val, char *buf, int width) {
 }
 #endif
 
+/* Bounded string ops — never write past dst[cap-1], always NUL-terminate. A source
+ * too long for the buffer TRUNCATES instead of overflowing, so no language pack or
+ * module string (pure data) can smash a fixed UI buffer and crash the device. This is
+ * the safety net behind STABILITY IS LAW: bad/oversized data degrades to a clipped
+ * label, never a freeze. */
+void str_lcpy(char *dst, int cap, const char *src) {
+    int n = 0;
+    if (cap <= 0) return;
+    while (n < cap - 1 && src[n]) { dst[n] = src[n]; n++; }
+    dst[n] = '\0';
+}
+
+void str_lcat(char *dst, int cap, const char *src) {
+    int n = 0;
+    if (cap <= 0) return;
+    while (n < cap - 1 && dst[n]) n++;          /* bounded walk to current end */
+    while (n < cap - 1 && *src) dst[n++] = *src++;
+    dst[n] = '\0';
+}
+
+void str_fmt1_int(char *dst, int cap, const char *tmpl, int n) {
+    char num[16];
+    int_to_str(n, num);
+    int i = 0, done = 0;
+    while (*tmpl && i < cap - 1) {
+        if (!done && tmpl[0] == '%' && tmpl[1] == 'd') {
+            for (const char *p = num; *p && i < cap - 1; p++) dst[i++] = *p;
+            tmpl += 2;
+            done = 1;
+        } else {
+            dst[i++] = *tmpl++;
+        }
+    }
+    if (cap > 0) dst[i] = '\0';
+}
+
+void str_fmt1_str(char *dst, int cap, const char *tmpl, const char *s) {
+    int i = 0, done = 0;
+    while (*tmpl && i < cap - 1) {
+        if (!done && tmpl[0] == '%' && tmpl[1] == 's') {
+            for (const char *p = s; *p && i < cap - 1; p++) dst[i++] = *p;
+            tmpl += 2;
+            done = 1;
+        } else {
+            dst[i++] = *tmpl++;
+        }
+    }
+    if (cap > 0) dst[i] = '\0';
+}
+
 void hex_to_str(uint32_t val, char *buf, int width) {
     char temp[16];
     int i = 0;

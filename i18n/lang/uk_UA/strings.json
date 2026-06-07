@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "Інструменти",
   "STR_TITLE_SETTINGS": "Налаштування",
   "STR_LAUNCH": "Запуск",
@@ -70,5 +70,25 @@
   "STR_ERR_DISK_FULL": "Диск заповнено",
   "STR_ERR_TREE_DEEP": "Завелика вкладеність",
   "STR_ERR_PATH_LONG": "Завеликий шлях",
-  "STR_WRITING": "Запис: "
+  "STR_WRITING": "Запис: ",
+  "STR_SELECT_FS": "Вибір ФС",
+  "STR_DIR": "Папка",
+  "STR_FILE": "Файл",
+  "STR_UNKNOWN": "Невідомо",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "Читання/Запис",
+  "STR_MODE_RO": "Лише читання",
+  "STR_FILE_N": "Файл %d",
+  "STR_DIV_INTFLASH": "Внутрішня",
+  "STR_DIV_EXTFLASH": "Зовнішня",
+  "STR_DIV_SDCARD": "SD-карта",
+  "STR_THEME_DEFAULT": "Типова",
+  "STR_THEME_FALLBACK": "Запасна",
+  "STR_NOTICE_LANGUAGES": "Мови",
+  "STR_N_LANGUAGES": "%d мов",
+  "STR_N_MODULES": "%d модулів",
+  "STR_INSTALL_FROM_SD": "Встановити %s з SD?",
+  "STR_UPDATED": "Оновлено: %s",
+  "STR_OFW_SUFFIX": "Прошивка %s",
+  "STR_DECIMAL_SEP": ","
 }

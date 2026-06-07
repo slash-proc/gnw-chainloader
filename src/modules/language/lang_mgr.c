@@ -33,7 +33,7 @@
 #define I18N_LATIN_FONT "/i18n/fonts/latin.fnt"
 
 typedef struct {
-    char code[16];      /* locale code, e.g. "de_DE" ("en_US" for in-core English) */
+    char code[16];      /* locale code, e.g. "de_DE" (reserved "en" = in-core English) */
     char endonym[32];   /* selector label in the language's own script */
     char script[16];    /* font script -> /i18n/fonts/<script>.fnt ("latin" = base) */
 } i18n_entry_t;
@@ -45,6 +45,7 @@ static int          g_lang_count;
 static uint8_t      g_current;            /* index into g_langs */
 static uint32_t     g_lang_sz;
 static bool         g_base_ok;            /* the always-on base latin.fnt is loaded */
+static bool         g_rtl;                /* active language is right-to-left (arabic script) */
 
 static uint32_t rd32(const uint8_t *p) {
     return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
@@ -92,6 +93,7 @@ bool i18n_set(uint8_t idx) {
         to_english();
         g_current = 0;
         g_lang_sz = 0;
+        g_rtl = false;
         return true;
     }
 
@@ -111,19 +113,21 @@ bool i18n_set(uint8_t idx) {
     if (ok) {
         g_current = idx;
         g_lang_sz = sz;
+        g_rtl = (strcmp(e->script, "arabic") == 0);   /* RTL scripts mirror the UI */
         return true;
     }
 
     to_english();                  /* pack/font missing or corrupt -> graceful English */
     g_current = 0;
     g_lang_sz = 0;
+    g_rtl = false;
     return false;
 }
 
 /* Discovery: append a filesystem-discovered pack to the runtime list. */
 static void discover_cb(const char *code, const char *endonym, const char *script) {
     if (g_lang_count >= I18N_MAX) return;
-    if (strcmp(code, "en_US") == 0) return;             /* English is in-core (slot 0) */
+    if (strcmp(code, "en") == 0) return;                /* reserved in-core sentinel (slot 0) */
     for (int i = 0; i < g_lang_count; i++)
         if (strcmp(g_langs[i].code, code) == 0) return;  /* dedup by code */
     i18n_entry_t *e = &g_langs[g_lang_count++];
@@ -147,7 +151,7 @@ static void sort_by_code(void) {
 
 static void set_english_entry(void) {
     memset(g_langs, 0, sizeof(g_langs));
-    strcpy(g_langs[0].code, "en_US");
+    strcpy(g_langs[0].code, "en");      /* reserved sentinel code (never a real pack) */
     strcpy(g_langs[0].endonym, "English");
     strcpy(g_langs[0].script, "latin");
     g_lang_count = 1;
@@ -159,6 +163,16 @@ static int find_code(const char *code) {
     return 0;   /* English */
 }
 
+/* A real English pack (en_US / en_UK / ...) was discovered. When one is present the
+ * in-core "en" sentinel is HIDDEN from the live selector (it stays the silent tr()
+ * fallback): the user picks a proper mixed-case English, not the all-caps baked one.
+ * With no English pack the sentinel is the only English and stays visible. */
+static bool english_pack_present(void) {
+    for (int i = 1; i < g_lang_count; i++)
+        if (strncmp(g_langs[i].code, "en_", 3) == 0) return true;
+    return false;
+}
+
 /* (Re)build the runtime list: English + every valid pack on LittleFS, by code. */
 static void discover_into_list(void) {
     set_english_entry();
@@ -166,9 +180,12 @@ static void discover_into_list(void) {
     sort_by_code();
 }
 
-/* Apply the persisted language (/i18n/.active); default English. */
+/* Apply the persisted language (/i18n/.active). With none persisted (fresh device),
+ * default to en_US, then en_UK, then the in-core English sentinel. An explicit choice
+ * is persisted by code and restored verbatim. */
 static void restore_active(void) {
     int idx = 0;
+    bool have_persisted = false;
     char code[16];
     uint32_t sz = 0;
     if (vfs_read_file("/i18n/.active", code, sizeof(code) - 1, &sz) == 0 && sz > 0) {
@@ -177,6 +194,11 @@ static void restore_active(void) {
         for (uint32_t k = 0; k < sz; k++)
             if (code[k] == '\n' || code[k] == '\r' || code[k] == ' ') { code[k] = '\0'; break; }
         idx = find_code(code);
+        have_persisted = (idx != 0);   /* a real persisted language was found */
+    }
+    if (!have_persisted) {             /* absent/empty/missing -> en_US, then en_UK */
+        idx = find_code("en_US");
+        if (idx == 0) idx = find_code("en_UK");
     }
     (void)i18n_set((uint8_t)idx);
 }
@@ -210,17 +232,37 @@ void i18n_persist_active(void) {
 }
 
 uint8_t i18n_current(void) { return g_current; }
-int     i18n_count(void)   { return g_lang_count; }
+bool    i18n_is_rtl(void)  { return g_rtl; }
+
+/* Selectable count: the hidden in-core sentinel doesn't count when a real English
+ * pack exists (it's never reachable through the selector then). */
+int i18n_count(void) {
+    return english_pack_present() ? g_lang_count - 1 : g_lang_count;
+}
 
 const char *i18n_endonym(int idx) {
     if (idx < 0 || idx >= g_lang_count) return "";
     return g_langs[idx].endonym;
 }
 
+const char *i18n_code(int idx) {
+    if (idx < 0 || idx >= g_lang_count) return "";
+    return g_langs[idx].code;
+}
+
+/* Next/prev selectable language, wrapping. Skips index 0 (the in-core sentinel) when
+ * it's hidden, so the all-caps baked English never appears once a real English pack
+ * is installed; the user lands only on proper packs. */
 uint8_t i18n_cycle(uint8_t cur, int dir) {
     int n = g_lang_count;
     if (n <= 0) return 0;
-    int pos = ((int)cur + dir) % n;
-    if (pos < 0) pos += n;
-    return (uint8_t)pos;
+    int step = (dir < 0) ? -1 : 1;
+    int pos = (int)cur;
+    for (int i = 0; i < n; i++) {
+        pos = (pos + step) % n;
+        if (pos < 0) pos += n;
+        if (pos == 0 && english_pack_present()) continue;   /* hidden sentinel */
+        return (uint8_t)pos;
+    }
+    return cur;
 }

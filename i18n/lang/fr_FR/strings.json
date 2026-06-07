@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "Outils",
   "STR_TITLE_SETTINGS": "Réglages",
   "STR_LAUNCH": "Lancer",
@@ -33,7 +33,7 @@
   "STR_NO_FILESYSTEMS": "Aucun système",
   "STR_EMPTY_DIR": "Dossier vide",
   "STR_BATT": "Batt: ",
-  "STR_CHARGING": " [CHG]",
+  "STR_CHARGING": " [CHA]",
   "STR_ERASE": "Effacer",
   "STR_CANCEL": "Annuler",
   "STR_COPY": "Copier",
@@ -70,5 +70,28 @@
   "STR_ERR_DISK_FULL": "Disque plein",
   "STR_ERR_TREE_DEEP": "Arbre trop profond",
   "STR_ERR_PATH_LONG": "Chemin trop long",
-  "STR_WRITING": "Écriture: "
+  "STR_WRITING": "Écriture: ",
+  "STR_SELECT_FS": "Choisir FS",
+  "STR_DIR": "Dossier",
+  "STR_FILE": "Fichier",
+  "STR_UNKNOWN": "Inconnu",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "Lecture/Écriture",
+  "STR_MODE_RO": "Lecture seule",
+  "STR_FILE_N": "Fichier %d",
+  "STR_DIV_INTFLASH": "Interne",
+  "STR_DIV_EXTFLASH": "Externe",
+  "STR_DIV_SDCARD": "Carte SD",
+  "STR_THEME_DEFAULT": "Défaut",
+  "STR_THEME_FALLBACK": "Secours",
+  "STR_NOTICE_LANGUAGES": "Langues",
+  "STR_N_LANGUAGES": "%d langues",
+  "STR_N_MODULES": "%d modules",
+  "STR_INSTALL_FROM_SD": "Installer %s depuis SD ?",
+  "STR_UPDATED": "%s mis à jour",
+  "STR_OFW_SUFFIX": "Firmware %s",
+  "STR_DECIMAL_SEP": ",",
+  "_adopted": [
+    "STR_N_MODULES"
+  ]
 }

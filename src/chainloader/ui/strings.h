@@ -16,7 +16,7 @@
  * lang_load() rejects a pack whose ABI version disagrees.
  */
 
-#define STRINGS_ABI_VERSION 3u
+#define STRINGS_ABI_VERSION 4u
 
 typedef enum {
     /* --- main menu / navigation --- */
@@ -112,6 +112,39 @@ typedef enum {
     STR_ERR_TREE_DEEP,       /* "TREE TOO DEEP" */
     STR_ERR_PATH_LONG,       /* "PATH TOO LONG" */
     STR_WRITING,             /* "WRITING: " (prefix; "<n>KB..." appended) */
+
+    /* --- ABI 4 sweep: previously-hardcoded user-visible strings --- */
+    /* file browser */
+    STR_SELECT_FS,           /* "SELECT FS" (browser tab title) */
+    STR_DIR,                 /* "DIR" (right-pane type) */
+    STR_FILE,                /* "FILE" (right-pane type, extensionless) */
+    STR_UNKNOWN,             /* "UNKNOWN" (unknown size) */
+    STR_FS_LITTLEFS,         /* "LITTLEFS" (filesystem display label) */
+    STR_MODE_RW,             /* "Read/Write" (filesystem mode) */
+    STR_MODE_RO,             /* "Read-only" (filesystem mode) */
+    STR_FILE_N,              /* "FILE %d" (running file count while calculating) */
+    /* partition viewer dividers (rendered as "-<label>-"; the '-' stays literal) */
+    STR_DIV_INTFLASH,        /* "INTFLASH" */
+    STR_DIV_EXTFLASH,        /* "EXTFLASH" */
+    STR_DIV_SDCARD,          /* "SD CARD" */
+    /* theme selector value names (UI words, not module proper nouns) */
+    STR_THEME_DEFAULT,       /* "DEFAULT" */
+    STR_THEME_FALLBACK,      /* "FALLBACK" */
+    /* SD install prompt + summary notice */
+    STR_NOTICE_LANGUAGES,    /* "LANGUAGES" (notice modal title) */
+    STR_N_LANGUAGES,         /* "%d languages" (count phrase, spliced into the below) */
+    STR_N_MODULES,           /* "%d modules"   (count phrase) */
+    STR_INSTALL_FROM_SD,     /* "Install %s from SD?" (%s = the count phrase) */
+    STR_UPDATED,             /* "Updated %s" (%s = the count phrase) */
+    /* OFW flash progress title (%s = the console proper noun, kept literal) */
+    STR_OFW_SUFFIX,          /* "%s OFW" */
+
+    /* --- locale formatting --- */
+    STR_DECIMAL_SEP,         /* locale decimal separator: "." (en + CJK), "," (most of
+                              * Europe), "٫" U+066B (ar/fa). Reserved: nothing renders a
+                              * decimal today, so this is the per-locale char future number
+                              * formatting reads via tr() instead of hardcoding "." -- no
+                              * grouping separator, we never format large numbers. */
 
     STR_COUNT
 } string_id_t;

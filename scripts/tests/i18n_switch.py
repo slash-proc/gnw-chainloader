@@ -59,12 +59,18 @@ def main() -> int:
         for i in range(args.steps):
             img, _ = device.read_framebuffer(dev.backend)
             img.save(OUT / f"lang_{i:02d}.png")
-            # OCR-validate the render: the active language's own LANGUAGE label
-            # (e.g. "Sprache" / "语言") must actually be on screen.
-            code = i18n.active_code(dev.backend)
-            lbl = i18n.label(code, "STR_LANGUAGE")
-            ok = ocr.Screen(np.asarray(img.convert("RGB"))).has(lbl) if lbl else False
-            print(f"  [{i:02d}] {code:8} LANGUAGE={lbl!r:14} render={'OK' if ok else 'MISSING'}")
+            # OCR-detect which language is live from the ASCII "(code)" suffix the
+            # Language selector renders ("< English (en_US) >", "< فارسی (fa_IR) >").
+            # Being ASCII it matches even when the endonym is Arabic/CJK, and it replaces
+            # the old g_current SWD read, which broke once the language state moved into
+            # the PIE module (the symbol is no longer in the core ELF).
+            code, strings = i18n.detect_language(dev, wake=False)
+            lbl = (strings.get("STR_LANGUAGE", "") or "").strip()
+            # The LANGUAGE label text only template-matches for Latin scripts; for
+            # ar / fa_IR / CJK a confident code detection is itself the render proof.
+            latin = bool(lbl) and all(ord(c) <= 0x024F for c in lbl)
+            ok = bool(code) and (not latin or ocr.Screen(np.asarray(img.convert("RGB"))).has(lbl))
+            print(f"  [{i:02d}] {str(code):8} LANGUAGE={lbl!r:14} render={'OK' if ok else 'MISSING'}")
             fails += 0 if ok else 1
             dev.button_press([ri.BTN_RIGHT]); h.settle(0.5)                  # next language
 

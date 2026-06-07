@@ -1,5 +1,8 @@
 [
-  { "code": "en_US",   "english": "English",                "endonym": "English",    "script": "latin" },
+  { "code": "en_US",   "english": "English (US)",           "endonym": "English",    "script": "latin" },
+  { "code": "en_UK",   "english": "English (UK)",           "endonym": "English",    "script": "latin" },
+  { "code": "ar",      "english": "Arabic",                 "endonym": "العربية",     "script": "arabic" },
+  { "code": "fa_IR",   "english": "Farsi",                  "endonym": "فارسی",       "script": "arabic" },
   { "code": "de_DE",   "english": "German",                 "endonym": "Deutsch",    "script": "latin" },
   { "code": "fr_FR",   "english": "French",                 "endonym": "Français",   "script": "latin" },
   { "code": "es_ES",   "english": "Spanish",                "endonym": "Español",    "script": "latin" },

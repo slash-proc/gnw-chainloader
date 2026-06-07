@@ -91,7 +91,7 @@ static void test_strings(void) {
     }
     check(all, "strings: every id has non-empty English text");
     check(tr((string_id_t)STR_COUNT)[0] == '\0', "strings: out-of-range id -> \"\"");
-    check(STRINGS_ABI_VERSION == 3u, "strings: ABI version is 3");
+    check(STRINGS_ABI_VERSION == 4u, "strings: ABI version is 4");
 
     /* Active-pack override: a sparse table overrides only what it sets. */
     static const char *pack[STR_COUNT];
@@ -103,6 +103,50 @@ static void test_strings(void) {
     strings_set_active(NULL);
     int restored = strcmp(tr(STR_ON), "ON") == 0;
     check(on_ok && off_ok && restored, "strings: active pack overrides per-id, English fallback, clears");
+}
+
+/* Round-trip the cooked en_US.lang: parse the 76-byte header and assert every
+ * offset is non-fallback -- the en_US pack must FULLY override the in-core all-caps
+ * English (no id left to fall back), proving the un-skipped cook produced a complete
+ * mixed-case pack. The .fnt/.lang are build artifacts; absence is a SKIP, not a fail. */
+static uint32_t rd32le(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+static void test_en_pack(void) {
+    static uint8_t buf[8192];
+    FILE *f = fopen("build/i18n/en_US.lang", "rb");
+    if (!f) {
+        printf("SKIP en_pack: build/i18n/en_US.lang absent (run `make i18n`) — pack untested\n");
+        return;
+    }
+    size_t n = fread(buf, 1, sizeof(buf), f);
+    fclose(f);
+    check(n >= 76 && rd32le(buf) == 0x32474E4Cu, "en_pack: magic 'LNG2'");
+    uint16_t abi = (uint16_t)(buf[4] | (buf[5] << 8));
+    uint16_t cnt = (uint16_t)(buf[6] | (buf[7] << 8));
+    check(abi == STRINGS_ABI_VERSION, "en_pack: header ABI matches the core");
+    check(cnt == (uint16_t)STR_COUNT, "en_pack: header str_count == STR_COUNT");
+    int all_set = 1;
+    for (uint16_t i = 0; i < cnt; i++) {
+        if (rd32le(buf + 76 + 4u * i) == 0xFFFFFFFFu) {
+            all_set = 0;
+            printf("  en_US id %u falls back to English (should be authored)\n", i);
+        }
+    }
+    check(all_set, "en_pack: every id is authored (en_US fully overrides English)");
+}
+
+/* The box-aware RTL mirror (gui_mirror_x, in gui_text.c): identity in LTR, and a
+ * correct reflection within the given box in RTL (full-screen OR a centered widget). */
+static void test_rtl_mirror(void) {
+    gui_rtl = false;
+    check(gui_mirror_x(20, 6, 0, 320) == 20, "mirror: identity when LTR");
+    check(gui_mirror_x(72, 100, 50, 220) == 72, "mirror: identity in a box when LTR");
+    gui_rtl = true;
+    check(gui_mirror_x(20, 6, 0, 320) == 294, "mirror: full-screen reflect (320-20-6)");
+    check(gui_mirror_x(50, 6, 50, 220) == 264, "mirror: box-relative reflect at box edge");
+    check(gui_mirror_x(72, 100, 50, 220) == 148, "mirror: box-relative interior, not screen");
+    gui_rtl = false;   /* restore global state for later tests */
 }
 
 static void test_font_ext(void) {
@@ -154,6 +198,8 @@ int main(void) {
     test_width();
     test_font_table();
     test_strings();
+    test_en_pack();
+    test_rtl_mirror();
     test_font_ext();
     printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "ALL PASSED", g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;

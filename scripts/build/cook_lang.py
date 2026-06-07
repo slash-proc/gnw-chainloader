@@ -75,9 +75,29 @@ def cmd_reference(_args):
     print(f"wrote {path} ({len(ids)} ids, abi from strings.h)")
 
 
+def _make_shaper(script):
+    """For an RTL script, return a function that PRE-SHAPES a standalone string to the
+    Unicode presentation forms in visual (left-to-right) order, so the device renders
+    the bytes as-is with zero runtime shaping/bidi. For LTR scripts, identity.
+
+    reshape() picks the contextual form (isolated/initial/medial/final); get_display()
+    (python-bidi) reorders to visual order. Only complete fragments are shaped here;
+    runtime label+value+number composition is the UI layer's job (compose_value)."""
+    if script != "arabic":
+        return lambda s: s
+    try:
+        import arabic_reshaper
+        from bidi.algorithm import get_display
+    except ImportError:
+        sys.exit("RTL cook needs arabic_reshaper + python-bidi "
+                 "(pip install arabic-reshaper python-bidi)")
+    return lambda s: get_display(arabic_reshaper.reshape(s))
+
+
 def build_pack(code, script, endonym, ids, abi, version):
     src = os.path.join(LANG_DIR, code, "strings.json")
     table = json.load(open(src, encoding="utf-8"))
+    shape = _make_shaper(script)
     blob = bytearray()
     offsets = []
     for i in ids:
@@ -86,11 +106,13 @@ def build_pack(code, script, endonym, ids, abi, version):
             offsets.append(FALLBACK)
         else:
             offsets.append(len(blob))
-            blob += s.encode("utf-8") + b"\x00"
+            blob += shape(s).encode("utf-8") + b"\x00"
     # Self-describing header (76 B): magic, abi, str_count, version, then fixed
     # script[16] + code[16] + endonym[32]. offsets[] start at byte 76. The device
-    # reads code/endonym/script straight from the pack — no compiled-in registry.
-    endo_b = endonym.encode("utf-8")
+    # reads code/endonym/script straight from the pack — no compiled-in registry. The
+    # endonym is shaped too (RTL) so the selector renders it correctly (no device shaping).
+    endo_shaped = shape(endonym)
+    endo_b = endo_shaped.encode("utf-8")
     if len(endo_b) > 31:
         sys.exit(f"endonym for {code} is {len(endo_b)} bytes (max 31): {endonym!r}")
     out = bytearray()
@@ -105,8 +127,13 @@ def build_pack(code, script, endonym, ids, abi, version):
         f.write(out)
     translated = sum(1 for o in offsets if o != FALLBACK)
     print(f"  {code:8} script={script:8} v{version} {translated}/{len(ids)} translated  -> {dst} ({len(out)} B)")
-    # codepoints needing the external font (>= 0x80)
-    cps = {ord(c) for s in table.values() for c in s if ord(c) >= 0x80}
+    # Codepoints needing the external font (>= 0x80), from the SHAPED text (presentation
+    # forms for RTL) so the font is subset to exactly what the device draws, plus the
+    # shaped endonym (the selector draws it in this language's font).
+    # Iterate the canonical ids (not table.values()) so non-string meta keys such as
+    # "_adopted" (a list) are skipped — the same keys build_pack ignores above.
+    cps = {ord(c) for i in ids for c in shape(table.get(i) or "") if ord(c) >= 0x80}
+    cps |= {ord(c) for c in endo_shaped if ord(c) >= 0x80}
     return cps
 
 
@@ -118,12 +145,14 @@ def cmd_build(_args):
     by_script = {}
     print(f"abi={abi}, {len(ids)} string ids")
     for lg in langs:
-        if lg["code"] == "en_US":
-            continue   # English is in-core (baked); it has no pack on the filesystem
+        # Build a pack for any manifest code that has an i18n/lang/<code>/strings.json.
+        # en_US/en_UK are real packs now (mixed-case English that overrides the all-caps
+        # in-core fallback); the reserved "en" sentinel is in-core only and is not in the
+        # manifest, so it is never cooked. A manifest entry with no strings.json is skipped.
+        if not os.path.isfile(os.path.join(LANG_DIR, lg["code"], "strings.json")):
+            print(f"  {lg['code']:8} (no strings.json — skipped)")
+            continue
         cps = build_pack(lg["code"], lg["script"], lg["endonym"], ids, abi, lg.get("version", 1))
-        # The selector renders this language's endonym in its own script font, so
-        # its glyphs must be in that font's subset too (not just the translations).
-        cps |= {ord(c) for c in lg["endonym"] if ord(c) >= 0x80}
         by_script.setdefault(lg["script"], set()).update(cps)
     for script, cps in by_script.items():
         chars = "".join(chr(c) for c in sorted(cps))

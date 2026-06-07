@@ -1,5 +1,5 @@
 {
-  "STR_TITLE_MAIN": "GNW CHAINLOADER",
+  "STR_TITLE_MAIN": "GnW Chainloader",
   "STR_TITLE_TOOLS": "Εργαλεία",
   "STR_TITLE_SETTINGS": "Ρυθμίσεις",
   "STR_LAUNCH": "Εκκίνηση",
@@ -70,5 +70,25 @@
   "STR_ERR_DISK_FULL": "Γεμάτος δίσκος",
   "STR_ERR_TREE_DEEP": "Πολύ βαθύ δέντρο",
   "STR_ERR_PATH_LONG": "Πολύ μακριά διαδρομή",
-  "STR_WRITING": "Εγγραφή: "
+  "STR_WRITING": "Εγγραφή: ",
+  "STR_SELECT_FS": "Επιλογή FS",
+  "STR_DIR": "Φάκελος",
+  "STR_FILE": "Αρχείο",
+  "STR_UNKNOWN": "Άγνωστο",
+  "STR_FS_LITTLEFS": "LittleFS",
+  "STR_MODE_RW": "Ανάγνωση/Εγγραφή",
+  "STR_MODE_RO": "Μόνο ανάγνωση",
+  "STR_FILE_N": "Αρχείο %d",
+  "STR_DIV_INTFLASH": "Εσωτερική",
+  "STR_DIV_EXTFLASH": "Εξωτερική",
+  "STR_DIV_SDCARD": "Κάρτα SD",
+  "STR_THEME_DEFAULT": "Προεπιλογή",
+  "STR_THEME_FALLBACK": "Εφεδρικό",
+  "STR_NOTICE_LANGUAGES": "Γλώσσες",
+  "STR_N_LANGUAGES": "%d γλώσσες",
+  "STR_N_MODULES": "%d ενότητες",
+  "STR_INSTALL_FROM_SD": "Εγκατάσταση %s από SD;",
+  "STR_UPDATED": "Ενημερώθηκε: %s",
+  "STR_OFW_SUFFIX": "Firmware %s",
+  "STR_DECIMAL_SEP": ","
 }

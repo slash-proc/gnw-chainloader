@@ -34,8 +34,10 @@ void i18n_rediscover(void);
 void i18n_persist_active(void);
 
 uint8_t i18n_current(void);          /* active index (0 = English) */
-int     i18n_count(void);            /* number of available languages */
+int     i18n_count(void);            /* number of selectable languages */
 const char *i18n_endonym(int idx);   /* selector label, in the language's script */
+const char *i18n_code(int idx);      /* locale code, e.g. "de_DE" (shown as "(de_DE)") */
+bool i18n_is_rtl(void);              /* active language is right-to-left (arabic script) */
 /* Next/prev language index, wrapping (the list is sorted by code, English first). */
 uint8_t i18n_cycle(uint8_t cur, int dir);
 
