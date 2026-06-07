@@ -86,17 +86,17 @@ void board_early_init(void) {
 #ifndef STUB
 void board_detect_console_type(void) {
     board_console_type = CONSOLE_NONE;
-    if (board_is_valid_app(0x08100000)) {
+    if (board_is_valid_app(OFW_INTERNAL_BASE)) {
         /* Fast check: Stock reset vectors at offset 4 */
-        uint32_t pc = *(volatile uint32_t *)0x08100004;
+        uint32_t pc = *(volatile uint32_t *)(OFW_INTERNAL_BASE + 4);
         if (pc == 0x08018101UL) { board_console_type = CONSOLE_MARIO; return; }
         if (pc == 0x0801B3E1UL) { board_console_type = CONSOLE_ZELDA; return; }
 
         /* Slow fallback: Compare first 256 bytes with OSPI backups */
         if (board_ospi_init()) {
-            const uint8_t *active = (const uint8_t *)0x08100000;
-            const uint8_t *mario = (const uint8_t *)(0x90000000 + 0x007C0000);
-            const uint8_t *zelda = (const uint8_t *)(0x90000000 + 0x007E0000);
+            const uint8_t *active = (const uint8_t *)OFW_INTERNAL_BASE;
+            const uint8_t *mario = (const uint8_t *)(EXTFLASH_BASE + MARIO_SPI_OFFSET);
+            const uint8_t *zelda = (const uint8_t *)(EXTFLASH_BASE + ZELDA_SPI_OFFSET);
             if (board_is_valid_app((uint32_t)mario) && memcmp(active, mario, 256) == 0) {
                 board_console_type = CONSOLE_MARIO;
             } else if (board_is_valid_app((uint32_t)zelda) && memcmp(active, zelda, 256) == 0) {
@@ -147,15 +147,41 @@ uint32_t board_ospi_get_size(void) {
     return OSPI_GetSize();
 }
 
+/*
+ * Hand the OSPI flash pins (PB1/PB2/PE11/PD12) to the SD-card SoftSPI bit-bang
+ * (the "Yota9" mod taps these same pins). Exit memory-mapped mode and deinit
+ * the OCTOSPI peripheral so the SD code can drive the pins as plain GPIO.
+ * Mirrors the reference's switch_ospi_gpio(false) peripheral handling.
+ * MUST be paired with board_ospi_resume() on every exit path — the menu/theme
+ * read the external flash and the boot path must never be left without it.
+ */
+void board_ospi_suspend(void) {
+    if (!ospi_initialized) return;
+    OSPI_DisableMemoryMappedMode();
+    HAL_OSPI_DeInit(&hospi1);
+}
+
+/*
+ * Restore the OCTOSPI flash after an SD SoftSPI burst. Re-init the peripheral
+ * (HAL_OSPI_MspInit flips the shared pins back to OCTOSPI alternate function)
+ * and re-enter memory-mapped mode. The flash chip itself was never reset, so we
+ * skip the heavier OSPI_Init() device handshake — matching the reference's
+ * lightweight HAL_OSPI_Init-only switch-back.
+ */
+void board_ospi_resume(void) {
+    if (!ospi_initialized) return;
+    MX_OCTOSPI1_Init();
+    SCB_CleanInvalidateDCache();
+    SCB_InvalidateICache();
+    OSPI_EnableMemoryMappedMode();
+}
+
 void board_adc_init(void) {
     __HAL_RCC_ADC12_CLK_ENABLE();
     __HAL_RCC_GPIOC_CLK_ENABLE();
 
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    GPIO_InitStruct.Pin = GPIO_PIN_4; // Battery voltage measurement pin
-    GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+    /* Battery voltage measurement pin (analog) */
+    board_gpio_init(GPIOC, GPIO_PIN_4, GPIO_MODE_ANALOG, GPIO_NOPULL, GPIO_SPEED_FREQ_LOW, 0);
 
     __HAL_RCC_ADC12_FORCE_RESET();
     __HAL_RCC_ADC12_RELEASE_RESET();
@@ -259,11 +285,13 @@ void board_rtc_write_backup(uint32_t val) {
     TAMP->BKP0R = val;
 }
 
-uint32_t board_rtc_read_fastboot(void) {
+/* TAMP->BKP3R holds the packed settings word (see boot_magic.h): fast-boot bit
+ * + per-OFW theme slots + validity signature. Battery-backed. */
+uint32_t board_rtc_read_settings(void) {
     return TAMP->BKP3R;
 }
 
-void board_rtc_write_fastboot(uint32_t val) {
+void board_rtc_write_settings(uint32_t val) {
     TAMP->BKP3R = val;
 }
 
@@ -291,7 +319,7 @@ void board_jump_to_app(uint32_t address) {
     if (!board_is_valid_app(address)) return;
 
     if ((address >> 24) == 0x08) {
-        if (address >= 0x08100000) {
+        if (address >= OFW_INTERNAL_BASE) {
             for (volatile int i = 0; i < BOOT_DELAY_CYCLES; i++);
             if (ensure_swapped_banks()) while(1);
             address -= 0x00100000;
@@ -328,9 +356,15 @@ void board_jump_to_app(uint32_t address) {
 
 #ifndef STUB
 bool board_flash_erase(void) {
+    /* Refuse to erase while the banks are swapped: a swapped FLASH_BANK_2 maps to
+     * the physical bank holding the chainloader + Retro-Go, so erasing it would
+     * destroy the boot firmware. The chainloader only runs unswapped, so this is
+     * defense-in-depth on top of the launcher-only reflash path. */
+    if (FLASH_OPTSR_CUR & FLASH_OPTSR_SWAP_BANK) return false;
+
     FLASH_EraseInitTypeDef EraseInitStruct;
     uint32_t SectorError = 0;
-    
+
     HAL_FLASH_Unlock();
     __HAL_FLASH_CLEAR_FLAG(FLASH_FLAG_ALL_ERRORS_BANK2);
 
@@ -399,28 +433,16 @@ void board_lcd_gpios_init(void) {
     /* Re-configure LCD-related GPIOs to ensure precise speed and pull settings 
        before critical display initialization sequence. This overlaps with MX_GPIO_Init
        but provides a clean, display-centric initialization point. */
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    GPIO_InitStruct.Pin = GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_8;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
+    board_gpio_init(GPIOD, GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_8,
+                    GPIO_MODE_OUTPUT_PP, GPIO_NOPULL, GPIO_SPEED_FREQ_VERY_HIGH, 0);
     GPIOD->BSRR = GPIO_PIN_1 | ((uint32_t)GPIO_PIN_4 << 16) | ((uint32_t)GPIO_PIN_8 << 16);   // 1V8 power disable, 3V3 power disable, Reset low
 
-    GPIO_InitStruct.Pin = GPIO_PIN_12;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    board_gpio_init(GPIOB, GPIO_PIN_12,
+                    GPIO_MODE_OUTPUT_PP, GPIO_NOPULL, GPIO_SPEED_FREQ_VERY_HIGH, 0);
     GPIOB->BSRR = GPIO_PIN_12;
 
-    GPIO_InitStruct.Pin = GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6;
-    GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+    board_gpio_init(GPIOA, GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6,
+                    GPIO_MODE_OUTPUT_PP, GPIO_NOPULL, GPIO_SPEED_FREQ_VERY_HIGH, 0);
     GPIOA->BSRR = (GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6) << 16;
 }
 #endif
@@ -439,16 +461,31 @@ typedef struct {
     uint8_t       alternate;
 } gpio_cfg_t;
 
-static void gpio_init_table(const gpio_cfg_t *cfg, int n) {
-    GPIO_InitTypeDef s = {0};
-    for (int i = 0; i < n; i++) {
-        s.Pin       = cfg[i].pin;
-        s.Mode      = cfg[i].mode;
-        s.Pull      = cfg[i].pull;
-        s.Speed     = cfg[i].speed;
-        s.Alternate = cfg[i].alternate;
-        HAL_GPIO_Init(cfg[i].port, &s);
+/* Bare-metal GPIO config — replaces HAL_GPIO_Init (saves ~440 B). Decodes the
+   HAL GPIO_MODE_* / PULL / SPEED / AF constants straight to the registers; no
+   EXTI/IT modes (none are used here). The caller enables the port clock, as
+   with HAL. AFR is written before MODER (glitch-free AF switch, like HAL). */
+void board_gpio_init(GPIO_TypeDef *g, uint32_t pins, uint32_t mode,
+                     uint32_t pull, uint32_t speed, uint32_t af) {
+    for (int p = 0; p < 16; p++) {
+        if (!(pins & (1u << p))) continue;
+        uint32_t s2 = (uint32_t)p * 2u;
+        g->OSPEEDR = (g->OSPEEDR & ~(3u << s2)) | ((speed & 3u) << s2);
+        g->PUPDR   = (g->PUPDR   & ~(3u << s2)) | ((pull  & 3u) << s2);
+        if (mode & 0x10u) g->OTYPER |=  (1u << p);   /* open-drain */
+        else              g->OTYPER &= ~(1u << p);   /* push-pull  */
+        if ((mode & 3u) == 2u) {                     /* alternate function */
+            uint32_t a4 = (uint32_t)(p & 7) * 4u;
+            g->AFR[p >> 3] = (g->AFR[p >> 3] & ~(0xFu << a4)) | ((af & 0xFu) << a4);
+        }
+        g->MODER = (g->MODER & ~(3u << s2)) | ((mode & 3u) << s2);
     }
+}
+
+static void gpio_init_table(const gpio_cfg_t *cfg, int n) {
+    for (int i = 0; i < n; i++)
+        board_gpio_init(cfg[i].port, cfg[i].pin, cfg[i].mode,
+                        cfg[i].pull, cfg[i].speed, cfg[i].alternate);
 }
 
 static void MX_GPIO_Init(void)

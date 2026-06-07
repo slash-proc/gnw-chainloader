@@ -4,14 +4,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-typedef enum {
-    UI_THEME_DEFAULT = 0,
-    UI_THEME_MARIO,
-    UI_THEME_ZELDA,
-} ui_theme_t;
-
-extern ui_theme_t ui_current_theme;
-extern bool ui_theme_enabled;
+/* Theme model lives in theme.h (slot-based: Default/Fallback in-core + module
+ * themes). ui_update_theme() below applies the OFW-appropriate / persisted slot. */
 
 extern bool ui_operation_in_progress;
 
@@ -31,8 +25,7 @@ typedef struct ui_window {
 } ui_window_t;
 
 void ui_init(void);
-void ui_update_theme(void);
-void ui_theme_toggle(void);
+void ui_update_theme(void);          /* apply the OFW-appropriate / persisted theme slot */
 void ui_push(ui_window_t *win);
 void ui_pop(void);
 void ui_switch(ui_window_t *win);
@@ -49,6 +42,9 @@ void ui_draw_footer(const char *text);
 void ui_draw_scan_progress(void);
 void ui_show_confirm(const char *message, void (*on_confirm)(void));
 void ui_show_error(const char *message);
+/* Like ui_show_error but with a neutral "LANGUAGES" title — a dismissible boot
+ * notice (e.g. "Updated N languages"). Press any button to clear. */
+void ui_show_notice(const char *message);
 void ui_show_context_menu(const char *title, const char **options, int count, void (*on_select)(int index));
 
 #endif // UI_H

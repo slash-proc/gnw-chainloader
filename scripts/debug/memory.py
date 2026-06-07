@@ -228,14 +228,14 @@ def main():
     # Dump
     dump_parser = subparsers.add_parser("dump", help="Dump memory region to file")
     dump_parser.add_argument("address", type=parse_address, help="Start address")
-    dump_parser.add_argument("length", type=int, help="Number of bytes to dump")
+    dump_parser.add_argument("length", type=lambda x: int(x, 0), help="Number of bytes to dump (decimal or 0x hex)")
     dump_parser.add_argument("file", help="Local output file path")
 
     # Compare
     comp_parser = subparsers.add_parser("compare", help="Compare local file to device memory")
     comp_parser.add_argument("address", type=parse_address, help="Start address on target")
     comp_parser.add_argument("file", help="Local file to compare against")
-    comp_parser.add_argument("--length", type=int, help="Max bytes to compare")
+    comp_parser.add_argument("--length", type=lambda x: int(x, 0), help="Max bytes to compare (decimal or 0x hex)")
 
     # Search
     search_parser = subparsers.add_parser("search", help="Search for byte patterns or pointers")

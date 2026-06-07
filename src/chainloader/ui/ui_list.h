@@ -10,12 +10,19 @@ typedef struct {
     int scroll_y;
     int visible_lines;
     uint32_t selected_tick;
-    
+    uint32_t scroll_tick;     // last time scroll_y actually shifted (drives the scrollbar)
+
     // Callbacks
     const char* (*get_label)(int index);
     void (*on_action)(int index);
     void (*on_back)(void);
-    
+    /* Optional value-selector hook: LEFT/RIGHT on the selected row call this
+     * with dir -1/+1 (e.g. the "< Theme >" item). NULL = LEFT/RIGHT ignored. */
+    void (*on_adjust)(int index, int dir);
+    /* Optional per-item enable predicate. Items returning false are shown greyed
+     * out and skipped by navigation/action (like dividers). NULL = all enabled. */
+    bool (*is_enabled)(int index);
+
     // Split pane support
     bool is_split;
     void (*draw_right_pane)(int selected_idx, uint32_t selected_tick);

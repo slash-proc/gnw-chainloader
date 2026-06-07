@@ -1,6 +1,6 @@
 OUTPUT_FORMAT("elf32-littlearm", "elf32-littlearm", "elf32-littlearm")
 OUTPUT_ARCH(arm)
-ENTRY(chainloader)
+ENTRY(bootloader)
 
 MEMORY
 {
@@ -13,7 +13,7 @@ SECTIONS
     .text : {
         . = __STOCK_ROM_END__;
         . = ALIGN(4);
-        KEEP(*(.text.chainloader))
+        KEEP(*(.text.bootloader))
         KEEP(*(.text.read_buttons))
         *(.text*)
         *(.rodata*)

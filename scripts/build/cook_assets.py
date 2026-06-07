@@ -192,7 +192,7 @@ def write_assets_c(all_entries, output_c, output_h, mario_out_dir=None, zelda_ou
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--src", type=Path, default="src/chainloader")
+    parser.add_argument("--src", type=Path, default="src")
     parser.add_argument("--mario", type=Path, default="src/chainloader/mario_tiles.json")
     parser.add_argument("--zelda", type=Path, default="src/chainloader/zelda_tiles_v3.json")
     parser.add_argument("--out-c", type=Path, default="src/chainloader/assets_gen.c")

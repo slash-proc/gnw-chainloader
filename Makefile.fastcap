@@ -1,0 +1,46 @@
+# Makefile for Fast Framebuffer Capture RAM App
+
+TARGET = build/fastcap/fastcap
+
+# Compilers and tools
+CC = arm-none-eabi-gcc
+OBJCOPY = arm-none-eabi-objcopy
+SIZE = arm-none-eabi-size
+
+# Architecture specific flags for STM32H7B0
+CPU = -mcpu=cortex-m7
+FPU = -mfpu=fpv5-d16
+FLOAT-ABI = -mfloat-abi=hard
+MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
+
+# C sources
+C_SOURCES = \
+src/fastcap/main.c \
+src/fastcap/jpeg_enc.c
+
+# Includes
+C_INCLUDES = \
+-Isrc/fastcap
+
+# Compiler flags
+CFLAGS = $(MCU) $(C_INCLUDES) -O2 -Wall -fdata-sections -ffunction-sections
+
+# Linker flags
+LDFLAGS = $(MCU) -T STM32H7B0_FASTCAP.ld -Wl,--gc-sections -nostdlib
+
+# Default action: build all
+all: $(TARGET).bin
+
+# Build the ELF
+$(TARGET).elf: $(C_SOURCES)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(LDFLAGS) $(C_SOURCES) -o $@
+	$(SIZE) $@
+
+# Generate the binary
+$(TARGET).bin: $(TARGET).elf
+	$(OBJCOPY) -O binary $< $@
+
+# Clean up
+clean:
+	rm -rf build/fastcap

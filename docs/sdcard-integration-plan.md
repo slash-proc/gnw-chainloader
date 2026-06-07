@@ -1,12 +1,23 @@
 # SD Card Integration Plan
 
-**Status:** Planning. No code changes yet.
+**Status:** Historical planning document. SD-card support has since shipped (Goal 13); see DESIGN §11 and ACTIVE_WORK for the current state. Retained for reference.
 **Budget:** ~600 bytes of free space in `gnw_chainloader.bin` (current: 32,128 / 32,768 ≈ 640 B free).
 **Goal:** The launcher recognises an SD card mod when present, mounts FAT/exFAT through the existing dynamic `fatfs.bin`, and remains 100% functional on consoles with no SD mod installed. The stub is never aware of SD.
 
 **Read/write split:** Read-only SD support is mandatory and lives in the host (chainloader binary). Read-write support is delivered by a new dynamic driver `sd_rw.bin`, loaded on demand from LittleFS exactly like `lfs_rw.bin` and `fatfs.bin`. If `sd_rw.bin` is not installed on the device, the SD card cleanly degrades to read-only — copy/paste/delete simply aren't offered for the SDCARD tab.
 
 The plan is split into phases so each can be built, flashed, and verified on hardware in isolation before the next is started. Every phase is sized so the running binary stays under the 32,767-byte stub limit.
+
+---
+
+> **⚠️ Update — this plan predates the PIE-module-loader work and the hardware findings below; it will be rewritten. Treat the sections beneath as historical until then.**
+>
+> **The unit in hand is the SPI1 / "Tim" dedicated-pin mod, not the OSPI pin-tap.** The SPI1 path (HAL_SPI on PB3 SCK / PD7 MOSI / PB4 MISO + PB9 CS + PA15 VCC) is now ported in-core in `src/chainloader/storage/sdcard.c` (faithful port of the reference's `user_diskio_spi.c` + `sdcard_init_spi1`) and **verified on hardware**: CMD0 → CMD8 (echo `0x1AA`) → ACMD41 → CMD58 (OCR `0xC0FF8000`, SDHC) init plus a sector-0 read returning a valid `0xAA55` MBR. The SoftSPI/OSPI-tap path is also ported in-core and its bus verified, but no OSPI-tap card was available to test. This supersedes §0.1's "targets the OSPI pin-tap variant only," and SPI1 is no longer behind a compile flag.
+>
+> **Open idea (NOT decided — flagged for later):** since each unit has exactly ONE SD mod, known at flash time, ship **two build variants of the dist binary** — one compiled for Tim/SPI1, one for Yota9/SoftSPI-over-OSPI — selected by a single compile flag (e.g. `-DSDCARD_SPI1` vs `-DSDCARD_SOFTSPI`). Each build compiles only its own transport, dropping the other's cost: the SPI1 build avoids the OSPI multiplex, the SoftSPI build avoids `stm32h7xx_hal_spi.c` (~1.85 KB). This helps the shrink-to-32K goal.
+> - **This per-mod build is the ONLY alternative/variant build we will ever sanction.** Everything else stays a single unified codebase with one way of doing things — explicitly NO proliferation of build flavours, and NO runtime-module split for the SD transport. The two variants differ by one `#ifdef`, nothing more.
+> - Until that split is taken, both transports + auto-detect coexist in one binary (fine for now; the unused path is just dead weight against the budget).
+> - Implication to resolve: detection currently tries SPI1 then SoftSPI in one binary; a per-mod build simply compiles the one path and skips auto-detect.
 
 ---
 
@@ -34,7 +45,7 @@ The pin-tap path is mutually exclusive with OSPI memory-mapped access — when S
 The chainloader's flash budget is preserved by an unusually disciplined set of conventions. Any new code added in this work must follow them, not invent parallel mechanisms:
 
 * **Two-stage RAM-boot** — 32 KB flash stub LZMA-inflates the app to AXI-SRAM (`0x24000000`, 1 MB). The app never executes from flash. All SD code lives in the app.
-* **Dynamic drivers** — `fatfs.bin` (11.6 KB) and `lfs_rw.bin` (13.5 KB) are stored as files inside a LittleFS partition on external flash. They are loaded on demand into fixed AXI-SRAM slots (`0x240A0000` for FAT, `0x240C0000` for LFS-RW) and entered via the `init_driver(vfs_driver_t*, const host_api_t*)` symbol pinned at offset 0 by `ENTRY(init_driver)` plus a `KEEP(*(.text.init_driver))` first in the driver linker script. **SD support reuses `fatfs.bin` exactly — no new driver binary.**
+* **Dynamic drivers** — `fatfs.bin` (11.6 KB) and `lfs_rw.bin` (13.5 KB) are stored as files inside a LittleFS partition on external flash. They are loaded on demand into fixed AXI-SRAM slots (`0x240A0000` for FAT, `0x240C0000` for LFS-RW) and entered via the `init_module(vfs_driver_t*, const host_api_t*)` symbol pinned at offset 0 by `ENTRY(init_module)` plus a `KEEP(*(.text.init_module))` first in the driver linker script. **SD support reuses `fatfs.bin` exactly — no new driver binary.**
 * **Host-API callback contract** — Dynamic drivers contain no HAL. They route all hardware access through `host_api_t` callbacks. SD I/O will be added the same way.
 * **Bare-metal register writes** — `GPIOx->BSRR`, `RCC->CR`, `PWR->CR1` directly rather than `HAL_GPIO_Init`/`HAL_PWR_*`. The new SD GPIO multiplex follows suit.
 * **Table-driven GPIO setup** — `gpio_cfg_t` arrays consumed by `gpio_init_table()` already exist in `board.c`. SD's GPIO pin maps go in the same table style, not as fresh `GPIO_InitStruct` boilerplate.
@@ -47,9 +58,9 @@ The three active linker scripts and the two driver scripts already give us what 
 
 * `STM32H7B0_FLASH_STUB.ld` — 32 KB stub. **No SD code here.** Untouched.
 * `STM32H7B0_RAM_APP.ld` — 1 MB AXI-SRAM app. SD host code lives in here; no script change.
-* `src/drivers/fs/fatfs/STM32H7B0_DRIVER.ld` — Driver region `0x240A0000`, 128 KB. The current `fatfs.bin` uses only ~11.6 KB; adding pdrv=1 dispatch lands well within the slot.
-* `src/drivers/fs/lfs_rw/STM32H7B0_DRIVER.ld` — Untouched.
-* **NEW** `src/drivers/sd_rw/STM32H7B0_DRIVER.ld` — Driver region `0x240E0000`, 128 KB. Cloned from the existing driver linker scripts. `sd_rw.bin` is expected to be well under 2 KB; the rest of the slot is unused.
+* `src/modules/filesystems/fatfs/STM32H7B0_DRIVER.ld` — Driver region `0x240A0000`, 128 KB. The current `fatfs.bin` uses only ~11.6 KB; adding pdrv=1 dispatch lands well within the slot.
+* `src/modules/filesystems/lfs_rw/STM32H7B0_DRIVER.ld` — Untouched.
+* **NEW** `src/modules/sd_rw/STM32H7B0_DRIVER.ld` — Driver region `0x240E0000`, 128 KB. Cloned from the existing driver linker scripts. `sd_rw.bin` is expected to be well under 2 KB; the rest of the slot is unused.
 
 `STM32H7B0VBTx.ld` is a stale legacy file unused by any build target; leave it alone.
 
@@ -149,7 +160,7 @@ The OSPI/SD bracketing belongs in `vfs.c`'s host wrappers, **not** in the driver
 * `mount(0, 0)` → SD-card mode.
 * Anything else → OSPI partition at that physical address as today.
 
-Inside `driver_entry.c`:
+Inside `module_entry.c`:
 
 * Add a single `static uint8_t g_drive_mode;` — 0 = OSPI (current behaviour), 1 = SD.
 * `fat_vfs_mount` switches mode based on the sentinel, then calls `f_mount` as before. FatFs's `FF_VOLUMES=1` stays at 1; we never have both mounted simultaneously.
@@ -174,24 +185,24 @@ The driver gains one byte of state and one `if (g_drive_mode)` per disk_io entry
 
 ### 2.5.1 Goal
 
-A new minimal dynamic driver binary exposing the SD-card write primitive. It is loaded on demand by the file browser when the user attempts a copy-to-SD, delete-on-SD, or paste-to-SD operation. If the file `/drivers/sd_rw.bin` does not exist on LittleFS, the SD card is read-only and the offending UI options are not shown.
+A new minimal dynamic driver binary exposing the SD-card write primitive. It is loaded on demand by the file browser when the user attempts a copy-to-SD, delete-on-SD, or paste-to-SD operation. If the file `/modules/sd_rw.bin` does not exist on LittleFS, the SD card is read-only and the offending UI options are not shown.
 
-### 2.5.2 New layout (mirrors `src/drivers/fs/lfs_rw/`)
+### 2.5.2 New layout (mirrors `src/modules/filesystems/lfs_rw/`)
 
 ```
-src/drivers/sd_rw/
-  driver_entry.c
+src/modules/sd_rw/
+  module_entry.c
   STM32H7B0_DRIVER.ld
 ```
 
 ### 2.5.3 Driver linker script
 
-Single 128 KB MEMORY region at `0x240E0000` (after `lfs_rw` at `0x240C0000`). `ENTRY(init_driver)`, `KEEP(*(.text.init_driver))` first in `.text`. Identical structure to `src/drivers/fs/lfs_rw/STM32H7B0_DRIVER.ld` except for the ORIGIN.
+Single 128 KB MEMORY region at `0x240E0000` (after `lfs_rw` at `0x240C0000`). `ENTRY(init_module)`, `KEEP(*(.text.init_module))` first in `.text`. Identical structure to `src/modules/filesystems/lfs_rw/STM32H7B0_DRIVER.ld` except for the ORIGIN.
 
-### 2.5.4 What goes in `driver_entry.c`
+### 2.5.4 What goes in `module_entry.c`
 
 * **`sdcard_write_sector(uint32_t sector, const uint8_t *buf) -> int`** — CMD24 SINGLE_WRITE, 0xFE token, 512 bytes via `g_host->sd_xchg`, two CRC dummy bytes, response check, ready-wait. The CMD primitive is duplicated here (small, ~30 B) so we don't need a second host callback for it.
-* **`init_driver(sd_rw_ops_t *out_ops, const host_api_t *api)`** — Captures `api` into `g_host` (driver-static) and writes `out_ops->write_sector = sdcard_write_sector`. Mirrors the FAT driver's contract but with a much smaller `sd_rw_ops_t`:
+* **`init_module(sd_rw_ops_t *out_ops, const host_api_t *api)`** — Captures `api` into `g_host` (driver-static) and writes `out_ops->write_sector = sdcard_write_sector`. Mirrors the FAT driver's contract but with a much smaller `sd_rw_ops_t`:
 
   ```c
   typedef struct {
@@ -204,9 +215,9 @@ Single 128 KB MEMORY region at `0x240E0000` (after `lfs_rw` at `0x240C0000`). `E
 Add `vfs_load_sd_rw_driver(void) -> bool` that:
 
 1. Returns `true` immediately if already loaded (idempotent like `vfs_is_lfs_rw_loaded`).
-2. Locates `/drivers/sd_rw.bin` on the LittleFS partition via the existing partition scanner (same iteration loop as `vfs_load_dynamic_driver`).
+2. Locates `/modules/sd_rw.bin` on the LittleFS partition via the existing partition scanner (same iteration loop as `vfs_load_dynamic_driver`).
 3. Reads it into `0x240E0000`, cleans dcache, invalidates icache.
-4. Calls `init_driver` at `(0x240E0000 | 1)` with a stack-local `sd_rw_ops_t` and the address of `g_host_api`.
+4. Calls `init_module` at `(0x240E0000 | 1)` with a stack-local `sd_rw_ops_t` and the address of `g_host_api`.
 5. Patches `g_host_api.sd_write = ops.write_sector;` so `fatfs.bin`'s `disk_write` for SD now finds a non-NULL write callback.
 6. Sets an internal `g_sd_rw_loaded = true;` flag, exposed via `vfs_is_sd_rw_loaded()`.
 
@@ -226,7 +237,7 @@ Driver binary expected ~400-800 B after `-flto --gc-sections`. Lives in AXI-SRAM
 * Deploy via the `install` target to the device's LittleFS.
 * Boot, navigate to SDCARD in the file browser; confirm RW options (COPY/PASTE/DELETE) now appear.
 * Perform a write; confirm sector readback matches.
-* Manually delete `/drivers/sd_rw.bin` from LittleFS, reboot, navigate to SDCARD; confirm RW options are hidden and the tab is read-only.
+* Manually delete `/modules/sd_rw.bin` from LittleFS, reboot, navigate to SDCARD; confirm RW options are hidden and the tab is read-only.
 
 ---
 
@@ -302,7 +313,7 @@ When the user selects the SDCARD row in the file browser's FS list, the dynamic 
 
 ### 5.2 Changes to `src/chainloader/ui/ui_file_browser.c`
 
-* **FS list build (`build_fs_list`)** — Add SDCARD partition to the list with the same FAT-style probing block as the OSPI FAT case, but the mount call uses `(0, 0)` sentinel. `fs_is_rw[SD]` follows the existing LittleFS pattern: probe LittleFS once for the presence of `/drivers/sd_rw.bin`. Present → RW; absent → RO. `statfs` populates Free/Used/Total after mount.
+* **FS list build (`build_fs_list`)** — Add SDCARD partition to the list with the same FAT-style probing block as the OSPI FAT case, but the mount call uses `(0, 0)` sentinel. `fs_is_rw[SD]` follows the existing LittleFS pattern: probe LittleFS once for the presence of `/modules/sd_rw.bin`. Present → RW; absent → RO. `statfs` populates Free/Used/Total after mount.
 * **`mount_tab_partition`** — Already dispatches on `type[0]/type[1]`. Recognise the SDCARD address sentinel to choose `(0, 0)` mount arguments; otherwise everything else is unchanged.
 * **`fs_list_get_label`** — Currently emits `"FAT @ 0x90400000"` etc. For SD card, emit `"SDCARD"` (no address suffix, since `0xC0000000` is fake).
 * **`update_browser_title`** — Currently emits `"FAT/some/dir"`. For SD, emit `"SDCARD/some/dir"` so the user knows which device they're on.
@@ -310,7 +321,7 @@ When the user selects the SDCARD row in the file browser's FS list, the dynamic 
 
 ### 5.3 Driver loading
 
-`fatfs.bin` continues to be lazy-loaded via `vfs_load_dynamic_driver("FAT", "/drivers/fs/fatfs.bin")` exactly as today. **No new loader logic needed for read.**
+`fatfs.bin` continues to be lazy-loaded via `vfs_load_dynamic_driver("FAT", "/modules/filesystems/fatfs.bin")` exactly as today. **No new loader logic needed for read.**
 
 For write: `vfs_load_sd_rw_driver()` (Phase 2.5) is called lazily inside `perform_paste` and `perform_delete` when the destination/target is the SD card. If it returns false (driver missing on LittleFS), the UI shows `SD WRITE UNAVAILABLE` and aborts before any disk I/O. In practice `fs_is_rw[SD]` already gates the COPY/PASTE/DELETE menu options so the user never reaches this error path unless the driver file is removed between FS-list build and operation execution.
 
@@ -452,8 +463,8 @@ If a fresh contributor (or future-Claude) picks this up, read in this order:
 2. DESIGN.md §5 (boot flow & module map), §8 (OSPI init), §6 (bank swap) — context for how OSPI sits in the boot path.
 3. This file.
 4. `example projects/game-and-watch-bootloader/Core/Src/gw_sdcard.c` and `softspi.c` — the reference for pin-tap and OSPI/SD multiplex.
-5. `src/chainloader/storage/vfs.{c,h}` and `src/drivers/fs/fatfs/driver_entry.c` — the existing host-API / dynamic-driver contract.
-6. `src/drivers/fs/lfs_rw/` — the closest precedent for `sd_rw.bin`'s structure (driver_entry.c + linker script + Makefile rules).
+5. `src/chainloader/storage/vfs.{c,h}` and `src/modules/filesystems/fatfs/module_entry.c` — the existing host-API / dynamic-driver contract.
+6. `src/modules/filesystems/lfs_rw/` — the closest precedent for `sd_rw.bin`'s structure (module_entry.c + linker script + Makefile rules).
 7. `src/chainloader/storage/lfs_wrapper.c` — pattern for OSPI memory-mapped toggle plus DCache bracketing.
 
 Only after that should code be written.

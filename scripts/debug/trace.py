@@ -223,6 +223,9 @@ def main():
     # Resume
     subparsers.add_parser("resume", help="Resume target CPU execution")
     
+    # Reset
+    subparsers.add_parser("reset", help="Reset the target CPU")
+
     # Reset-halt
     subparsers.add_parser("reset-halt", help="Reset and halt the target CPU")
 
@@ -257,6 +260,12 @@ def main():
         elif args.command == "resume":
             print("Resuming CPU...")
             backend.resume()
+            
+        elif args.command == "reset":
+            print("Resetting CPU...")
+            backend.reset()
+            pc, sp, lr = get_cpu_info(backend)
+            print(f"Reset: PC=0x{pc:08X} SP=0x{sp:08X}")
             
         elif args.command == "reset-halt":
             print("Resetting and halting CPU...")

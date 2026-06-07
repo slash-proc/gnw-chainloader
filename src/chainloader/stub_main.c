@@ -2,6 +2,8 @@
 #include "main.h"
 #include "LzmaDec.h"
 #include "../common/boot_magic.h"
+#include "../common/memory_map.h"
+#include "../common/stub_services.h"
 #include <string.h>
 
 /* These symbols will be provided by the blob object */
@@ -23,6 +25,12 @@ void *stub_lzma_alloc(ISzAllocPtr p, size_t size) {
 void stub_lzma_free(ISzAllocPtr p, void *address) { (void)p; (void)address; }
 ISzAlloc stub_lzma_allocator = { stub_lzma_alloc, stub_lzma_free };
 
+/* Published at a fixed flash address (see stub_services.h + the linker's
+ * .stub_services section) so the RAM app reuses this LZMA decoder instead of
+ * linking its own copy. The stub's boot decode below is unaffected. */
+__attribute__((section(".stub_services"), used))
+const stub_services_t g_stub_services = { STUB_SERVICES_MAGIC, LzmaDecode };
+
 int main(void) {
     /* 1. Hardware setup needed for logic (Clocks, GPIO, RTC, OSPI) */
     board_early_init();
@@ -40,9 +48,15 @@ int main(void) {
         while (1) { NVIC_SystemReset(); }
     }
 
-    /* 2.5. Check for Retro-Go warm reset (Reserves AXI-SRAM state) */
-    if (boot_magic_check((volatile uint32_t *)0x20000000, BOOT_MAGIC_RESET)) {
-        board_jump_to_app(0x08008000UL);
+    /* 2.5. Retro-Go warm-reset trace (RESET at RG_MAGIC_ADDR): re-launch Retro-Go,
+       preserving its live AXI-SRAM state, so its launcher reloads ("Return to Main
+       Menu"). Use RETROGO_BASE, never a literal: a hardcoded 0x08008000 here went
+       stale when the chainloader ceiling rose 32K->40K (RETROGO_BASE 0x08008000 ->
+       0x0800A000) and jumped 8K short, into the chainloader image — that is what
+       broke return-to-menu. board_jump_to_app() validates the target and returns
+       (falls through to decompress the chainloader -> menu) if Retro-Go is absent. */
+    if (boot_magic_check((volatile uint32_t *)RG_MAGIC_ADDR, BOOT_MAGIC_RESET)) {
+        board_jump_to_app(RETROGO_BASE);
     }
 
     /* 3. Launcher Mode: Decompress the RAM image */

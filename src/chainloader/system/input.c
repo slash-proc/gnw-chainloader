@@ -1,6 +1,9 @@
 #include "input.h"
 #include "board.h"
 #include "main.h"
+#ifdef REMOTE_INPUT
+#include "../../common/memory_map.h"
+#endif
 
 typedef struct {
     GPIO_TypeDef *port;
@@ -34,6 +37,11 @@ void input_init(void) {
     for (int i = 0; i < INPUT_COUNT; i++) {
         g_next_repeat_time[i] = 0;
     }
+#ifdef REMOTE_INPUT
+    /* Clear the shadow cell so a cold boot with no host attached injects nothing
+     * (DTCMRAM is not zeroed by our startup; it could hold reset-survivor junk). */
+    *(volatile uint32_t *)SRAM_REMOTE_INPUT_ADDR = 0;
+#endif
 }
 
 void input_update(void) {
@@ -43,8 +51,19 @@ void input_update(void) {
 
     uint32_t ticks = HAL_GetTick();
 
+#ifdef REMOTE_INPUT
+    /* Remote button bitmask injected over the debug probe (input_button_t bit
+     * order). OR'd in below so a physical press and a remote write are identical
+     * to the auto-repeat logic. The host clears the cell on key-up / timeout. */
+    uint16_t remote = (uint16_t)(*(volatile uint32_t *)SRAM_REMOTE_INPUT_ADDR);
+#endif
+
     for (int i = 0; i < INPUT_COUNT; i++) {
-        if (board_check_button(BUTTON_MAP[i].port, BUTTON_MAP[i].pin)) {
+        bool down = board_check_button(BUTTON_MAP[i].port, BUTTON_MAP[i].pin);
+#ifdef REMOTE_INPUT
+        down = down || (remote & (1u << i));
+#endif
+        if (down) {
             g_current_state |= (1 << i);
             
             // Auto-repeat logic

@@ -6,6 +6,7 @@
 #include "main.h"
 #include "../common/memory_map.h"
 #include "LzmaDec.h"
+#include "../common/stub_services.h"
 #include <string.h>
 
 extern uint16_t *framebuffer;
@@ -30,6 +31,17 @@ void *lzma_alloc(ISzAllocPtr p, size_t size) {
 }
 void lzma_free(ISzAllocPtr p, void *address) { (void)p; (void)address; }
 ISzAlloc lzma_allocator = { lzma_alloc, lzma_free };
+
+/* Decompress via the stub's LZMA decoder (published at STUB_SERVICES_ADDR) so
+ * the app doesn't link its own copy. If the table isn't present (layout drift),
+ * fail gracefully — the caller treats non-SZ_OK as "assets unavailable". */
+static SRes app_lzma_decode(Byte *dest, SizeT *destLen, const Byte *src, SizeT *srcLen,
+        const Byte *propData, unsigned propSize, ELzmaFinishMode finishMode,
+        ELzmaStatus *status, ISzAllocPtr alloc) {
+    if (STUB_SERVICES->magic != STUB_SERVICES_MAGIC) return SZ_ERROR_FAIL;
+    return STUB_SERVICES->lzma_decode(dest, destLen, src, srcLen, propData, propSize,
+                                      finishMode, status, alloc);
+}
 
 static void gui_draw_asset_internal(int x, int y, const uint8_t *recipe, bool transparent, bool flip_h) {
     uint8_t dims = recipe[0];
@@ -121,6 +133,7 @@ static void gui_draw_asset_internal(int x, int y, const uint8_t *recipe, bool tr
                 
                 if (tile_idx == 0xFFFF) continue;
                 int base_id = (tile_idx & 0x0FFF);
+                if (base_id >= 256) continue;   /* dynamic_tileset holds 256 tiles; guard OOB */
                 const uint8_t *tile_ptr = dynamic_tileset + base_id * 256;
 
                 if (flags & ASSET_FLAG_ZELDA_QUAD) {
@@ -221,7 +234,7 @@ static bool load_palette_from_compressed_memory(const uint8_t *source_fw,
     SizeT inSize = cm_len;
     ELzmaStatus status;
     static const uint8_t props[5] = {0x5D, 0x00, 0x40, 0x00, 0x00};
-    if (LzmaDecode(scratch, &destLen, source_fw + cm_addr, &inSize,
+    if (app_lzma_decode(scratch, &destLen, source_fw + cm_addr, &inSize,
                    props, 5, LZMA_FINISH_ANY, &status, &lzma_allocator) != SZ_OK) {
         return false;
     }
@@ -272,7 +285,15 @@ void board_load_dynamic_assets(void) {
         uint8_t link_colors[3] = {0x37, 0x28, 0x1A};
         build_nes_palette(nes_pal, link_colors);
         memcpy(dynamic_tileset, (const uint8_t *)(EXTFLASH_BASE + 0x20000), 65536);
-        assets_loaded = true;
+        /* The Mario branch commits assets_loaded only on a successful decode; the
+         * Zelda copy always "succeeds", so guard against an absent/erased external
+         * flash (which reads back all-0xFF) the same way — otherwise it loads as a
+         * garbage tileset and renders garbage sprites. A real tileset has data, so
+         * any non-0xFF byte means the assets are present (color-only fallback
+         * otherwise, like a failed Mario decode). */
+        for (int i = 0; i < 65536; i++) {
+            if (dynamic_tileset[i] != 0xFF) { assets_loaded = true; break; }
+        }
     } else if (ofw_type == 1) {
         uint32_t compressed_ptr = *(const uint32_t *)(source_fw + 0x7350);
         if (compressed_ptr >= 0x08000000 && compressed_ptr < 0x08020000) {
@@ -285,7 +306,7 @@ void board_load_dynamic_assets(void) {
         SizeT destLen = 0x10000, inSize = 0x10000;
         ELzmaStatus status;
         static const uint8_t lzma_props[5] = {0x5D, 0x00, 0x40, 0x00, 0x00};
-        if (LzmaDecode(dynamic_tileset, &destLen, (const uint8_t *)compressed_ptr, &inSize, lzma_props, 5, LZMA_FINISH_ANY, &status, &lzma_allocator) == SZ_OK) {
+        if (app_lzma_decode(dynamic_tileset, &destLen, (const uint8_t *)compressed_ptr, &inSize, lzma_props, 5, LZMA_FINISH_ANY, &status, &lzma_allocator) == SZ_OK) {
             for (int i = 0; i < 80; i++) {
                 uint16_t b = pal_raw[i * 4 + 0], g = pal_raw[i * 4 + 1], r = pal_raw[i * 4 + 2];
                 dynamic_palette[i] = ((uint16_t)(r & 0xF8) << 8) | ((uint16_t)(g & 0xFC) << 3) | ((uint16_t)b >> 3);

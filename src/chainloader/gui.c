@@ -1,5 +1,6 @@
 #include "gui.h"
 #include "board.h"
+#include "../common/memory_map.h"
 #include <string.h>
 
 /* Dual RGB565 framebuffers in AXI SRAM, aligned to 32-byte cache line size */
@@ -47,18 +48,14 @@ uint16_t gui_bg_color = RGB565(0x20, 0x24, 0x28);
 uint16_t gui_fg_color = RGB565(0xD0, 0xD4, 0xD8);
 uint16_t gui_accent_color = RGB565(0x00, 0xA0, 0xA0);
 uint16_t gui_border_color = RGB565(0xD0, 0xD4, 0xD8);
+uint16_t gui_footer_color = RGB565(0x14, 0x16, 0x1A);
 
 static void gui_spi2_init(void) {
     __HAL_RCC_SPI2_CLK_ENABLE();
     __HAL_RCC_GPIOB_CLK_ENABLE();
 
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-    GPIO_InitStruct.Pin = GPIO_PIN_13 | GPIO_PIN_15;
-    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
-    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-    GPIO_InitStruct.Alternate = GPIO_AF5_SPI2;
-    HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+    board_gpio_init(GPIOB, GPIO_PIN_13 | GPIO_PIN_15,
+                    GPIO_MODE_AF_PP, GPIO_NOPULL, GPIO_SPEED_FREQ_LOW, GPIO_AF5_SPI2);
 
     __HAL_RCC_SPI2_FORCE_RESET();
     __HAL_RCC_SPI2_RELEASE_RESET();
@@ -144,6 +141,15 @@ static void gw_lcd_spi_tx(SPI_HandleTypeDef *spi, uint8_t *pData) {
     HAL_Delay(2);
 }
 
+/* Cooperative-idle hook for the LCD settle delays — see gui.h. Defaults to a
+ * plain busy wait; the app points it at a pump that advances background boot work
+ * (the partition/SD scan) so the panel-settle wait overlaps useful work. */
+void (*gui_settle_hook)(uint32_t ms) = NULL;
+static void gui_settle(uint32_t ms) {
+    if (gui_settle_hook) gui_settle_hook(ms);
+    else                 HAL_Delay(ms);
+}
+
 void gui_init(void) {
     if (gui_initialized) return;
     gui_initialized = true;
@@ -178,7 +184,7 @@ void gui_init(void) {
     GPIOD->BSRR = GPIO_PIN_4;   // 3V3 on
     HAL_Delay(2);
     GPIOD->BSRR = (uint32_t)GPIO_PIN_1 << 16; // 1V8 on
-    HAL_Delay(50);
+    gui_settle(50);   /* >=50ms settle; pumps the background scan if hooked */
     wdog_refresh();
 
     /* Lets go, bootup sequence. */
@@ -188,7 +194,7 @@ void gui_init(void) {
     gw_lcd_set_reset(1); // LOW (assert)
     HAL_Delay(20);
     gw_lcd_set_reset(0); // HIGH (release)
-    HAL_Delay(50);
+    gui_settle(50);   /* >=50ms settle; pumps the background scan if hooked */
     wdog_refresh();
 
     gw_lcd_spi_tx(&hspi2, (uint8_t *)"\x08\x80");
@@ -203,7 +209,7 @@ void gui_init(void) {
     gw_lcd_spi_tx(&hspi2, (uint8_t *)"\x14\x80");
 
     /* Wait for panel to finish initializing before turning on backlight */
-    HAL_Delay(50);
+    gui_settle(50);   /* >=50ms settle; pumps the background scan if hooked */
     wdog_refresh();
 
     gui_backlight_on(true);
@@ -273,28 +279,30 @@ void gui_draw_text(int x, int y, const char *str, uint16_t color) {
 
 #include "assets.h"
 #include "ui/gui_font.h"
+
+/* utf8 decode, glyph lookup, and text-width live in gui_text.c (HAL-free, so
+ * they're host-unit-testable); the framebuffer blitters below stay here. */
+
 void gui_draw_char_clipped(int x, int y, int clip_x, int clip_w, uint32_t cp, uint16_t color) {
-    if (cp >= 'a' && cp <= 'z') cp = cp - 'a' + 'A';
-    
-    if (cp < 0x20 || cp > 0x5A) return; // unsupported char
-    const uint8_t *bitmap = gui_font_ascii[cp - 0x20];
-    
-    for (int row = 0; row < 8; row++) {
-        int fb_y = y + row;
+    gui_glyph_info_t g;
+    if (!gui_glyph(cp, &g)) return;
+
+    int clip_r = clip_x + clip_w;
+    for (int row = 0; row < g.h; row++) {
+        int fb_y = y + g.yoff + row;
         if (fb_y < 0 || fb_y >= SCREEN_HEIGHT) continue;
         uint16_t *fb_row = &framebuffer[fb_y * SCREEN_WIDTH];
-        uint8_t line = bitmap[row];
-        for (int col = 0; col < 8; col++) {
+        const uint8_t *rb = g.rows + row * g.stride;
+        for (int col = 0; col < g.w; col++) {
             int fb_x = x + col;
-            if (fb_x < 0 || fb_x >= SCREEN_WIDTH || fb_x < clip_x || fb_x >= clip_x + clip_w) continue;
-            if ((line >> (7 - col)) & 1) fb_row[fb_x] = color;
+            if (fb_x < clip_x || fb_x >= clip_r || fb_x < 0 || fb_x >= SCREEN_WIDTH) continue;
+            if ((rb[col >> 3] >> (7 - (col & 7))) & 1) fb_row[fb_x] = color;
         }
     }
 }
 
 void gui_draw_text_marquee(int x, int y, int max_w, const char *str, uint16_t color, bool is_active, uint32_t tick_offset) {
-    int text_len = strlen(str);
-    int text_w = text_len * 8;
+    int text_w = gui_text_width(str);
     int offset_x = 0;
 
     if (text_w > max_w && is_active) {
@@ -319,11 +327,13 @@ void gui_draw_text_marquee(int x, int y, int max_w, const char *str, uint16_t co
     int cursor_x = x - offset_x;
     const uint8_t *u = (const uint8_t *)str;
     while (*u) {
-        uint32_t cp = *u++;
-        if (cursor_x + 8 > x && cursor_x < x + max_w) {
+        uint32_t cp = gui_utf8_next(&u);
+        gui_glyph_info_t g;
+        gui_glyph(cp, &g);
+        if (cursor_x + g.w > x && cursor_x < x + max_w) {
             gui_draw_char_clipped(cursor_x, y, x, max_w, cp, color);
         }
-        cursor_x += 8;
+        cursor_x += g.w;
     }
 }
 
@@ -371,12 +381,11 @@ void gui_draw_fill_rect(int x, int y, int w, int h, uint16_t color) {
 }
 
 /*
- * Blends a rectangle with the existing framebuffer contents.
- * frost=false: 25% darken (selection dim). frost=true: 50% lighten toward white.
+ * Blends a rectangle with the existing framebuffer contents: a 25% darken toward
+ * the background color, used to dim a selection or a modal backdrop.
  */
-void gui_draw_blend_rect(int x, int y, int w, int h, bool frost) {
+void gui_draw_blend_rect(int x, int y, int w, int h) {
     if (!gui_clip_rect(&x, &y, &w, &h)) return;
-    (void)frost;
 
     for (int j = 0; j < h; j++) {
         uint16_t *dest = &framebuffer[(y + j) * SCREEN_WIDTH + x];
@@ -412,6 +421,19 @@ void gui_backlight_on(bool on) {
 void gui_refresh(void) {
     SCB_CleanDCache_by_Addr((uint32_t *)framebuffer, SCREEN_WIDTH * SCREEN_HEIGHT * sizeof(uint16_t));
 
+    /* Fastcap hook: if the host has written a function pointer to
+       FASTCAP_HOOK_ADDR, call it now.  The framebuffer is cache-coherent and
+       complete at this point (D-Cache just flushed above) and LTDC has not
+       yet reloaded, giving the hook a stable, full frame to inspect.
+       The framebuffer pointer is passed as the first argument so the hook can
+       diff and encode directly without needing a separate DTCM register.
+       The hook runs in chainloader context — normal C ABI, full stack. */
+    {
+        typedef void (*fastcap_fn_t)(const uint16_t *fb);
+        fastcap_fn_t hook = *(fastcap_fn_t volatile * volatile)(FASTCAP_HOOK_ADDR);
+        if (hook) hook(framebuffer);
+    }
+
     /* Queue the new buffer — callback applies it via IMR during blanking */
     ltdc_pending_fb = framebuffer;
     HAL_LTDC_Reload(&hltdc, LTDC_RELOAD_VERTICAL_BLANKING);
@@ -426,4 +448,8 @@ void gui_refresh(void) {
     uint16_t *temp = framebuffer;
     framebuffer = back_buffer;
     back_buffer = temp;
+}
+
+uint16_t *gui_current_framebuffer(void) {
+    return framebuffer;
 }

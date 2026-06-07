@@ -17,6 +17,10 @@ typedef enum {
 extern board_console_type_t board_console_type;
 
 void board_detect_console_type(void);
+/* Bare-metal GPIO config (replaces HAL_GPIO_Init). Args take the HAL
+ * GPIO_MODE_x / GPIO_PULLx / GPIO_SPEED_x / GPIO_AFx constants. */
+void board_gpio_init(GPIO_TypeDef *g, uint32_t pins, uint32_t mode,
+                     uint32_t pull, uint32_t speed, uint32_t af);
 void board_init(void);
 void board_early_init(void);
 void board_clocks_init(void);
@@ -25,6 +29,10 @@ void board_load_dynamic_assets(void);
 void board_lcd_gpios_init(void);
 bool board_ospi_init(void);
 uint32_t board_ospi_get_size(void);
+/* OSPI flash <-> SD SoftSPI pin handoff (Yota9 mod shares the flash pins).
+ * Strictly paired: suspend before bit-banging SD, resume after. */
+void board_ospi_suspend(void);
+void board_ospi_resume(void);
 void board_adc_init(void);
 void board_rtc_init(void);
 uint32_t board_rtc_get_fattime(void);
@@ -35,8 +43,8 @@ uint32_t board_get_battery_millivolts(void);
 void board_battery_update(int *out_percent, bool *out_plugged);
 uint32_t board_rtc_read_backup(void);
 void board_rtc_write_backup(uint32_t val);
-uint32_t board_rtc_read_fastboot(void);
-void board_rtc_write_fastboot(uint32_t val);
+uint32_t board_rtc_read_settings(void);
+void board_rtc_write_settings(uint32_t val);
 bool board_is_valid_app(uint32_t address);
 void board_jump_to_app(uint32_t address);
 void board_request_jump(uint32_t address);

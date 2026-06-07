@@ -293,11 +293,12 @@ static int lfs_vfs_unlink(const char *path) {
     return LFS_ERR_INVAL;
 }
 
-static int lfs_vfs_statfs(uint32_t *total_bytes, uint32_t *free_bytes) {
+static int lfs_vfs_statfs(uint32_t *total_sectors, uint32_t *free_sectors) {
     lfs_ssize_t used = lfs_fs_size(&lfs);
     if (used < 0) return -1;
-    *total_bytes = flash_cfg.block_count * flash_cfg.block_size;
-    *free_bytes = (flash_cfg.block_count - used) * flash_cfg.block_size;
+    uint32_t spb = flash_cfg.block_size / 512;   /* 512-byte sectors per block */
+    *total_sectors = (uint32_t)flash_cfg.block_count * spb;
+    *free_sectors  = (uint32_t)(flash_cfg.block_count - used) * spb;
     return 0;
 }
 

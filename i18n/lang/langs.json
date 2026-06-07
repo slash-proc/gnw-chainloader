@@ -1,0 +1,18 @@
+[
+  { "code": "en_US",   "english": "English",                "endonym": "English",    "script": "latin" },
+  { "code": "de_DE",   "english": "German",                 "endonym": "Deutsch",    "script": "latin" },
+  { "code": "fr_FR",   "english": "French",                 "endonym": "Français",   "script": "latin" },
+  { "code": "es_ES",   "english": "Spanish",                "endonym": "Español",    "script": "latin" },
+  { "code": "it_IT",   "english": "Italian",                "endonym": "Italiano",   "script": "latin" },
+  { "code": "pt_PT",   "english": "Portuguese",             "endonym": "Português",  "script": "latin" },
+  { "code": "nl_NL",   "english": "Dutch",                  "endonym": "Nederlands", "script": "latin" },
+  { "code": "ja_JP",   "english": "Japanese",               "endonym": "日本語",      "script": "ja" },
+  { "code": "zh_CN",   "english": "Chinese (Simplified)",   "endonym": "中文",        "script": "zh_hans" },
+  { "code": "ko_KR",   "english": "Korean",                 "endonym": "한국어",      "script": "ko" },
+  { "code": "ru_RU",   "english": "Russian",                "endonym": "Русский",    "script": "latin" },
+  { "code": "uk_UA",   "english": "Ukrainian",              "endonym": "Українська", "script": "latin" },
+  { "code": "el_GR",   "english": "Greek",                  "endonym": "Ελληνικά",   "script": "latin" },
+  { "code": "pl_PL",   "english": "Polish",                 "endonym": "Polski",     "script": "latin" },
+  { "code": "zh_TW",   "english": "Chinese (Traditional)",  "endonym": "繁體中文",    "script": "zh_hant" },
+  { "code": "ro_RO",   "english": "Romanian",               "endonym": "Română",     "script": "latin" }
+]

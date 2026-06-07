@@ -14,14 +14,35 @@ flash_chainloader: all
 	gnwmanager start bank1
 	-$(RESTORE_KEYSTONE)
 
+# Deploy the PIE driver modules to the device's LittleFS: the FS drivers to
+# /modules/filesystems/ and the sprite theme module to /modules/theme/. These are the
+# ONLY build artifacts pushed to LittleFS (the chainloader is flashed to bank1;
+# patched OFW goes to external flash). Run after rebuilding a module so the
+# device picks up the new binary. `all` builds them, so this depends on it —
+# keeping compile+push one cohesive flow.
+push_modules: all
+	@echo "Pushing driver modules (FS, theme, language, installer) ..."
+	@python3 scripts/build/push_batched.py \
+	    /modules/filesystems/fatfs.bin=$(BUILD_DIR)/fatfs.bin \
+	    /modules/filesystems/lfs_rw.bin=$(BUILD_DIR)/lfs_rw.bin \
+	    /modules/theme/theme.bin=$(BUILD_DIR)/theme.bin \
+	    /modules/language.bin=$(BUILD_DIR)/language.bin \
+	    /modules/installer.bin=$(BUILD_DIR)/installer.bin
+	-$(RESTORE_KEYSTONE)
+
+# Convenience: flash the chainloader AND deploy the modules in one go. Use this
+# after an ABI change (e.g. the module header) where the on-device modules must
+# match the freshly flashed chainloader.
+deploy: flash_chainloader push_modules
+
 # --- Retro-Go Configuration ---
 # All variables prefixed with RG_ are automatically passed to the retro-go-sd build.
 # The RG_ prefix is stripped when passing to the child Makefile.
 RG_DEBUG ?= 0
 RG_INTFLASH_BANK ?= 1
-RG_INTFLASH_ADDRESS ?= 0x08008000
+RG_INTFLASH_ADDRESS ?= 0x0800A000
 RG_OFW_ADDRESS ?= 0x08100000
-RG_FLASH_LENGTH ?= 224k
+RG_FLASH_LENGTH ?= 216k
 RG_SD_CARD ?= 1
 RG_EXTFLASH_OFFSET ?= 8388608
 RG_EXTFLASH_SIZE_MB = $(if $(filter 1,$(RG_SD_CARD)),$(EXTFLASH_SIZE),$(shell echo $$(( $(EXTFLASH_SIZE) - 8 ))))
@@ -96,7 +117,7 @@ flash_all: all patch
 		-- start bank1
 	-$(RESTORE_KEYSTONE)
 
-.PHONY: flash_chainloader flash_mario flash_zelda flash_all
+.PHONY: flash_chainloader push_modules deploy flash_mario flash_zelda flash_all
 
 
 

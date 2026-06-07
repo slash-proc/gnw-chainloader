@@ -42,6 +42,14 @@ void partition_scan_update(void);
 partition_scan_state_t partition_scan_get_state(void);
 
 /*
+ * partition_modules_ready — true once the boot scan has registered the module
+ * sources (SD + the LittleFS at its known offset), so the theme module can load.
+ * Set by the front-loaded probe well before the full sweep completes; also set at
+ * STATE_COMPLETE as a fallback if the fast LittleFS probe missed.
+ */
+bool partition_modules_ready(void);
+
+/*
  * partition_scan_get_progress — returns current progress (done/total).
  */
 void partition_scan_get_progress(int *done, int *total);
@@ -65,6 +73,20 @@ void partition_flash_ofw(const char *name, uint32_t spi_offset, uint32_t size);
 
 int partition_get_count(void);
 partition_info_t* partition_get_info(int index);
+
+/* Re-probe only the SD card and reconcile its synthetic partition (the full
+ * flash scan still happens at boot). Called on File Browser / Partition Viewer
+ * entry so a card inserted/removed/swapped after boot is noticed. Returns true
+ * if the partition set changed. */
+bool partition_redetect_sd(void);
+
+/* --- Shared partition classification (used by the loader + both UIs) --- */
+/* True if this is the synthetic SD-card partition (base == SDCARD_SENTINEL_ADDR). */
+bool partition_is_sd(const partition_info_t *p);
+/* Short display code for the filesystem type: "LFS" / "FAT" / "FROG", or NULL. */
+const char *partition_fs_code(const partition_info_t *p);
+/* Registered vfs_driver name for the type: "LFS" / "FAT" / "FROGFS", or NULL. */
+const char *partition_driver_name(const partition_info_t *p);
 void update_progress_ui(int pct, const char *title, const char *status);
 extern uint32_t    total_ext_flash_size;
 extern const char *partition_current_phase;  /* updated during scan; display on progress screen */

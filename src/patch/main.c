@@ -5,8 +5,10 @@
  * Muller's fork which this project used as its reference. The LZMA plumbing
  * (memcpy_inflate, rwdata_inflate, bss_rwdata_init), start_app(), and the
  * read_buttons() scaffolding are from those projects and are in part copied
- * verbatim; check_start_button() and the chainloader() hook logic are original
- * to gnw-chainloader.
+ * verbatim; check_start_button() and the bootloader() hook logic are original
+ * to gnw-chainloader. (The entry symbol is named `bootloader` to match the
+ * gnwmanager patch script's `replace(0x4, "bootloader")`; it returns control to
+ * the chainloader launcher in Bank 1.)
  *
  *   Brian Pugh    — https://github.com/brianpugh/game-and-watch-patch
  *   Marian Muller — https://github.com/marian-m12l/game-and-watch-patch
@@ -40,12 +42,35 @@ const uint8_t * const SMB1_ROM __attribute__((used)) = (const uint8_t *)0x90001e
 #define GAMEPAD_LEFT     (1 << 1)
 #define GAMEPAD_GAME     (1 << 10)
 
-#ifndef STOCK_RESET_HANDLER
-#define STOCK_RESET_HANDLER 0x08017a45
+#ifdef REMOTE_INPUT
+/* Full remote -> stock button translation. The host writes a bitmask in the
+ * chainloader's "unified format" (input_button_t enum bit order); the stock OFW
+ * packs its buttons differently. This table maps each shadow-cell bit to the
+ * stock gamepad bit, derived from the stock read_buttons() of both Mario
+ * (0x08010D48) and Zelda (0x08016808) via scripts/debug/disasm_stock_buttons.py.
+ * The shared buttons use identical bit positions in both games, and Zelda's
+ * extra START/SELECT bits are simply unread by Mario (so setting them is
+ * harmless). Index = input_button_t:
+ *   UP DOWN LEFT RIGHT A B START SELECT PAUSE GAME TIME PWR */
+static const uint16_t remote_to_stock[12] = {
+    0x008, 0x004, 0x002, 0x001,  /* UP DOWN LEFT RIGHT */
+    0x080, 0x040,                /* A B                 */
+    0x010, 0x020,                /* START SELECT (Zelda) */
+    0x200, 0x400, 0x100,         /* PAUSE GAME TIME     */
+    0x000                        /* PWR: no gamepad bit  */
+};
 #endif
 
+/* Per-console stock-firmware addresses. The build MUST supply these via
+ * -DSTOCK_RESET_HANDLER / -DSTOCK_READ_BUTTONS (the Makefile compiles this file
+ * once per console: Mario 0x08017a45 / 0x08010d49, Zelda 0x0801ad49 / 0x08016809).
+ * Erroring out is intentional: a missing flag would otherwise bake Mario's
+ * addresses into a Zelda patch and corrupt its reset and button handling. */
+#ifndef STOCK_RESET_HANDLER
+#error "STOCK_RESET_HANDLER undefined: build the patch per-console (-DSTOCK_RESET_HANDLER=0x...)"
+#endif
 #ifndef STOCK_READ_BUTTONS
-#define STOCK_READ_BUTTONS (0x08010d48 | 1)
+#error "STOCK_READ_BUTTONS undefined: build the patch per-console (-DSTOCK_READ_BUTTONS=0x...)"
 #endif
 
 static void __attribute__((naked)) start_app(uint32_t pc, uint32_t sp) {
@@ -81,7 +106,7 @@ void wdog_refresh(void) {
     // Stub for patch payload
 }
 
-void chainloader(void) {
+void bootloader(void) {
     // If START button is held at boot, return to Bank 1 (unswapped)
     if (check_start_button()) {
         ensure_unswapped_banks();
@@ -105,6 +130,12 @@ void chainloader(void) {
 uint16_t read_buttons(void) {
     uint16_t (* const stock_read_buttons_func)(void) = (void*)STOCK_READ_BUTTONS;
     uint16_t gamepad = stock_read_buttons_func();
+#ifdef REMOTE_INPUT
+    uint32_t remote = *(volatile uint32_t *)SRAM_REMOTE_INPUT_ADDR;
+    for (int i = 0; i < 12; i++) {
+        if (remote & (1u << i)) gamepad |= remote_to_stock[i];
+    }
+#endif
     if ((gamepad & GAMEPAD_LEFT) && (gamepad & GAMEPAD_GAME)) {
         *CHAINLOADER_MAGIC_ADDRESS = CHAINLOADER_MAGIC_FORCE;
         *CHAINLOADER_JUMP_ADDRESS = CHAINLOADER_BASE;

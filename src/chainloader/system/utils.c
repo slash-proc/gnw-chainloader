@@ -96,3 +96,17 @@ void format_size(uint32_t bytes, char *buf) {
         strcat(buf, "B");
     }
 }
+
+void format_size_sectors(uint32_t sectors, char *buf) {
+    /* 2 sectors == 1 KiB. Work in KiB so the intermediate fits a uint32_t even
+     * for multi-GB cards (an 8 GB card is ~15.6M sectors -> ~7.8M KiB). */
+    uint32_t kb = sectors / 2u;
+    if (kb >= 1024 * 1024) {
+        format_unit(kb, 1024 * 1024, "GB", buf);
+    } else if (kb >= 1024) {
+        format_unit(kb, 1024, "MB", buf);
+    } else {
+        int_to_str(kb, buf);
+        strcat(buf, "KB");
+    }
+}

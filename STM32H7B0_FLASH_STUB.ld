@@ -2,7 +2,7 @@ ENTRY(Reset_Handler)
 
 MEMORY
 {
-  FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 32K
+  FLASH (rx)      : ORIGIN = 0x08000000, LENGTH = 40K
   RAM (xrw)       : ORIGIN = 0x20001000, LENGTH = 124K /* Reserve 4K at 0x20000000 for Retro-Go state */
 }
 
@@ -14,6 +14,16 @@ SECTIONS
   {
     . = ALIGN(4);
     KEEP(*(.isr_vector))
+    . = ALIGN(4);
+  } >FLASH
+
+  /* Services table published to the RAM app at a fixed address right after the
+     64-byte vector table (see common/stub_services.h). The ASSERT below locks
+     the address so it can't silently drift if the vector table changes. */
+  .stub_services :
+  {
+    . = ALIGN(4);
+    KEEP(*(.stub_services))
     . = ALIGN(4);
   } >FLASH
 
@@ -71,3 +81,7 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
+
+/* Keep the services table at the address the app hardcodes (STUB_SERVICES_ADDR). */
+ASSERT(ADDR(.stub_services) == 0x08000040,
+       "stub_services moved: update STUB_SERVICES_ADDR in common/stub_services.h");
