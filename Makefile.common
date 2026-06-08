@@ -24,6 +24,7 @@ RELEASE_VERSION ?= 0.5
 # scripts/docker/entrypoint.sh, requirements*.txt) already lives in this repo.
 # No Docker serial/usb device support for Windows/MacOS/Other
 PLATFORM := $(shell uname -s)
+DETECTED_TZ := $(shell readlink /etc/localtime | sed 's|.*/zoneinfo/||' 2>/dev/null || cat /etc/timezone 2>/dev/null || echo "UTC")
 USB_FLAG :=
 # Automatically detect SERIAL_PORT if none is defined
 ifeq ($(PLATFORM),Linux)
@@ -54,6 +55,7 @@ DOCKER_RUN := docker run --rm -it \
     --add-host $(CONTAINER_NAME):127.0.0.1 \
     -e HOST_UID=$(shell id -u) \
     -e HOST_GID=$(shell id -g) \
+    -e TZ=$(DETECTED_TZ) \
     -v $(CURDIR):/opt/workdir \
     $(USB_FLAG) \
     $(DOCKER_IMAGE)
