@@ -173,7 +173,7 @@ def main():
                     with fs.open(gnw_path, "wb") as f:
                         f.write(data)
                     fs.setattr(gnw_path, "t", timestamp_now().to_bytes(4, "little"))
-                    gnw.wait_for_all_contexts_complete(timeout=args.timeout)
+                    gnw.wait_for_all_contexts_complete()
             except TimeoutError as e:
                 print(f"  !! {e} (elapsed {time.time() - t:.1f}s); device status = {device_status(gnw)!r}", flush=True)
                 raise
