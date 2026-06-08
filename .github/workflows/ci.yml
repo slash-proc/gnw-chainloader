@@ -118,7 +118,7 @@ jobs:
             -e HOST_GID=$(id -g) \
             -v ${{ github.workspace }}:/opt/workdir \
             slashproc/gnw-chainloader-builder:local \
-            bash -c "make build-rg-sd && make retrogo-crc"
+            bash -c "make -j$(nproc) build-rg-sd && make retrogo-crc && make -j$(nproc)"
 
       - name: Run Host QA Tests
         run: |
