@@ -136,7 +136,8 @@ static inline void drain_word(uint32_t word) {
 }
 
 int hwjpeg_decode(hwjpeg_read_fn rd, void *dev, hwjpeg_info_fn on_info, void *ctx,
-                  uint8_t *inbuf, int inbuf_cap) {
+                  uint8_t *inbuf, int inbuf_cap,
+                  hwjpeg_yield_fn yield, void *yield_ctx) {
     if (!rd || !on_info || !inbuf || inbuf_cap < 8) return -1;
     hw_start();
 
@@ -178,6 +179,7 @@ int hwjpeg_decode(hwjpeg_read_fn rd, void *dev, hwjpeg_info_fn on_info, void *ct
     int total = g_mcu.mcus_x * mcus_y;
     guard = 200000000;
 
+    int last_yield_done = 0;
     while (g_mcu.done < total && guard-- > 0) {
         uint32_t sr = JPEG->SR;
         if ((sr & JPEG_SR_IFTF) && !eof) {            /* burst-feed: room for >= 8 */
@@ -192,6 +194,10 @@ int hwjpeg_decode(hwjpeg_read_fn rd, void *dev, hwjpeg_info_fn on_info, void *ct
             drain_word(JPEG->DOR);
         } else if (sr & JPEG_SR_EOCF) {
             break;
+        }
+        if (yield && g_mcu.mcus_x > 0 && (g_mcu.done - last_yield_done) >= g_mcu.mcus_x) {
+            last_yield_done = g_mcu.done;
+            if (yield(yield_ctx)) break;
         }
     }
 

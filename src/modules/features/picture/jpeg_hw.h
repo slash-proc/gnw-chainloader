@@ -30,6 +30,7 @@ typedef struct {
 /* Called once after the header is parsed (image size + component count known); the caller fills
  * *view with the display mapping for this image. */
 typedef void (*hwjpeg_info_fn)(void *ctx, int w, int h, int ncomp, hwjpeg_view_t *view);
+typedef int (*hwjpeg_yield_fn)(void *ctx);
 
 /* M2: full hardware JPEG decode. Brings up the codec, streams the JPEG, and nearest-neighbour
  * resamples each decoded MCU straight into view->fb (converting only the displayed pixels).
@@ -38,6 +39,7 @@ typedef void (*hwjpeg_info_fn)(void *ctx, int w, int h, int ncomp, hwjpeg_view_t
  * inbuf/inbuf_cap: a caller-provided input staging buffer; bigger = fewer (multi-block) SD reads
  * of the compressed stream, which dominates the decode for large files. */
 int hwjpeg_decode(hwjpeg_read_fn rd, void *dev, hwjpeg_info_fn on_info, void *ctx,
-                  uint8_t *inbuf, int inbuf_cap);
+                  uint8_t *inbuf, int inbuf_cap,
+                  hwjpeg_yield_fn yield, void *yield_ctx);
 
 #endif /* PICTURE_JPEG_HW_H */

@@ -2,6 +2,7 @@
 
 A terse, bullet-point record of completed bug fixes and tasks, newest first. Keep each entry to one line and link the commit(s) that landed it. (Entries below predate this convention, so they are not all commit-linked.)
 
+- **Chunk-based image decoding (JPEG/PNG/BMP) to eliminate SD card contention and audio stuttering in the background MP3 player.**
 - **Fix background MP3 playback partition context swap and optimize utility functions for code size.**
 - **Background MP3 playback: keep MP3 module resident and decode audio in the background UI loop (hardware-verified).**
 - **Fixed god-mode flashing boot path: initialized OSPI and started partition scanner in app_early_logic so ofw_verify_by_spi can verify backups and assets properly.**

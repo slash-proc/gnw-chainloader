@@ -127,6 +127,8 @@ typedef struct {
     void (*run_view)(const ui_view_desc_t *desc);
     void (*pane_row)(int slot, const char *label, const char *value, bool marquee, uint32_t tick);
     void (*register_bg_tick)(void (*tick)(void));
+    void (*set_io_busy)(int busy);
+    int  (*is_io_busy)(void);
 } feature_host_t;
 
 typedef struct {

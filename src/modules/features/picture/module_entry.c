@@ -90,8 +90,24 @@ typedef struct {
 static pic_ctx_t g_ctx;
 
 /* ---- TJpgDec callbacks ---- */
+static void yield_tick(const feature_host_t *h) {
+    uint32_t now = h->get_tick();
+    if ((uint32_t)(now - g_poll_tick) >= CANCEL_POLL_MS) {
+        g_poll_tick = now;
+        h->input_update();
+    }
+}
+static int hw_yield(void *ctx) {
+    pic_ctx_t *c = (pic_ctx_t *)ctx;
+    if (c->h->set_io_busy) c->h->set_io_busy(0);
+    yield_tick(c->h);
+    if (c->h->set_io_busy) c->h->set_io_busy(1);
+    if (g_cancel_en && c->h->just_pressed(INPUT_B)) g_cancel = 1;
+    return g_cancel;
+}
 static size_t in_func(JDEC *jd, uint8_t *buf, size_t len) {
     pic_ctx_t *c = (pic_ctx_t *)jd->device;
+    yield_tick(c->h);
     if (buf) {
         int n = c->h->file_read(c->fp, buf, (uint32_t)len);
         if (n < 0) n = 0;
@@ -118,12 +134,15 @@ static size_t in_func(JDEC *jd, uint8_t *buf, size_t len) {
  * nonzero once cancelled; the decode callbacks then abort. No-op on fast decodes (g_cancel_en
  * off), so quick images never poll input or fight the main loop. */
 static int check_cancel(void) {
-    if (!g_cancel_en || g_cancel) return g_cancel;
+    if (g_cancel) return 1;
     uint32_t now = g_ctx.h->get_tick();
-    if ((uint32_t)(now - g_poll_tick) < CANCEL_POLL_MS) return 0;
-    g_poll_tick = now;
-    g_ctx.h->input_update();
-    if (g_ctx.h->just_pressed(INPUT_B)) g_cancel = 1;
+    if ((uint32_t)(now - g_poll_tick) >= CANCEL_POLL_MS) {
+        g_poll_tick = now;
+        if (g_ctx.h->set_io_busy) g_ctx.h->set_io_busy(0);
+        g_ctx.h->input_update();
+        if (g_ctx.h->set_io_busy) g_ctx.h->set_io_busy(1);
+        if (g_cancel_en && g_ctx.h->just_pressed(INPUT_B)) g_cancel = 1;
+    }
     return g_cancel;
 }
 
@@ -209,7 +228,7 @@ static int decode_jpeg(const feature_host_t *h, const char *path, uint16_t *fb, 
     g_ctx.h = h; g_ctx.fb = fb; g_ctx.pos = 0;
     g_ctx.fp = h->file_open(path);
     if (g_ctx.fp) {
-        int rc = hwjpeg_decode(hw_read, &g_ctx, hw_on_info, &g_ctx, scr, (int)PNG_SCRATCH_SIZE);
+        int rc = hwjpeg_decode(hw_read, &g_ctx, hw_on_info, &g_ctx, scr, (int)PNG_SCRATCH_SIZE, hw_yield, &g_ctx);
         h->file_close(g_ctx.fp);
         if (rc == 0) return JDR_OK;            /* hardware decoded straight to the framebuffer */
     }                                          /* unsupported/failed -> software tjpgd below */
@@ -256,6 +275,7 @@ static void png_blit_row(pic_ctx_t *c, int sy, const uint16_t *row) {
 }
 static size_t png_read(void *dev, uint8_t *buf, size_t len) {
     pic_ctx_t *c = (pic_ctx_t *)dev;
+    yield_tick(c->h);
     int n = c->h->file_read(c->fp, buf, (uint32_t)len);
     if (n > 0) { c->pos += (uint32_t)n; return (size_t)n; }
     return 0;
@@ -426,6 +446,7 @@ static int decode_current(const feature_host_t *h, const char *path, uint16_t *f
  * the screen through the same view geometry the software path uses (forward-declared above). */
 static size_t hw_read(void *dev, uint8_t *buf, size_t len) {
     pic_ctx_t *c = (pic_ctx_t *)dev;
+    yield_tick(c->h);
     int n = c->h->file_read(c->fp, buf, (uint32_t)len);
     if (n > 0) { c->pos += (uint32_t)n; return (size_t)n; }
     return 0;
@@ -513,7 +534,9 @@ static void render(const feature_host_t *h, int cur, int coarse) {
     else        g->fill_rect(0, 0, SCRW, SCRH, g->color_bg());
 
     g_cancel_en = slow;
+    if (h->set_io_busy) h->set_io_busy(1);
     int err = decode_current(h, g_name[cur], fb, coarse);
+    if (h->set_io_busy) h->set_io_busy(0);
     g_cancel_en = 0;
     if (g_cancel) return;                   /* aborted: leave the partial hidden; caller quits */
 

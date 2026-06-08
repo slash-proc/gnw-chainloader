@@ -256,6 +256,14 @@ static void feat_register_bg_tick(void (*tick)(void)) {
     }
 }
 
+static int g_io_busy = 0;
+static void feat_set_io_busy(int busy) {
+    g_io_busy = busy;
+}
+static int feat_is_io_busy(void) {
+    return g_io_busy;
+}
+
 static void feat_list_dir(const char *dirpath,
                           void (*cb)(const char *name, int is_dir, uint32_t size, void *user),
                           void *user) {
@@ -396,6 +404,8 @@ static feature_host_t g_feature_host = {
     .run_view      = feat_run_view,
     .pane_row      = ui_list_pane_row,
     .register_bg_tick = feat_register_bg_tick,
+    .set_io_busy   = feat_set_io_busy,
+    .is_io_busy    = feat_is_io_busy,
 };
 
 /* Map the loader's failure class to a user-facing message, so a transient launch that

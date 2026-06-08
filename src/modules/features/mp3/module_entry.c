@@ -39,8 +39,8 @@ MODULE_HEADER;
 static int16_t g_out[OUT_SAMPLES];
 
 /* ---- streaming MP3 decode state (all static -> module pool, not the stack) ---- */
-#define IN_CAP        16384       /* raw-MP3 window; ID3 tag is skipped by seek, so 16K is ample */
-#define IN_REFILL_LO  2880
+#define IN_CAP        65536       /* raw-MP3 window; ID3 tag is skipped by seek, so 64K buffer prevents SD card stutters */
+#define IN_REFILL_LO  16384
 static const feature_host_t *g_h;
 static void   *g_fp;
 static uint8_t g_in[IN_CAP];
@@ -61,6 +61,7 @@ static void refill(void) {
     int rem = g_in_len - g_in_pos;
     if (rem > 0 && g_in_pos > 0) memmove(g_in, g_in + g_in_pos, (size_t)rem);
     g_in_len = rem; g_in_pos = 0;
+    if (g_h->is_io_busy && g_h->is_io_busy()) return;
     while (g_in_len < (int)sizeof(g_in) && !g_eof) {
         int r = g_h->file_read(g_fp, g_in + g_in_len, (uint32_t)(sizeof(g_in) - g_in_len));
         if (r <= 0) { g_eof = 1; break; }
