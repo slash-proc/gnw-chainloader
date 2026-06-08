@@ -39,9 +39,8 @@ volatile uint32_t g_abi_selftest_mod  __attribute__((used)) = 0x5A5A5A5Au;
 volatile uint32_t g_abi_selftest_pack __attribute__((used)) = 0x5A5A5A5Au;
 static uint8_t abi_selftest_buf[2048];
 static void abi_selftest_run(void) {
-    uint32_t sz = 0;
     g_abi_selftest_mod  = (uint32_t)vfs_read_module("/modules/_selftest.bin",
-                                                    abi_selftest_buf, sizeof(abi_selftest_buf), &sz);
+                                                    abi_selftest_buf, sizeof(abi_selftest_buf), (uint32_t *)&g_abi_selftest_pack);
     g_abi_selftest_pack = vfs_lfs_lang_version("/i18n/_selftest.lang", 0);
 }
 #endif

@@ -1,21 +1,22 @@
 #include "utils.h"
 #include <string.h>
 
-void int_to_str(int val, char *buf) {
-    char temp[16];
-    int i = 0;
+char *int_to_str(int val, char *buf) {
+    char temp[12];
+    char *p = temp;
     if (val < 0) {
         *buf++ = '-';
         val = -val;
     }
     do {
-        temp[i++] = '0' + (val % 10);
+        *p++ = '0' + (val % 10);
         val /= 10;
-    } while (val > 0);
-    while (i > 0) {
-        *buf++ = temp[--i];
+    } while (val);
+    while (p > temp) {
+        *buf++ = *--p;
     }
     *buf = '\0';
+    return buf;
 }
 
 #ifdef ENABLE_EXTENDED_UTILS
@@ -113,38 +114,36 @@ void str_fmt1_int(char *dst, int cap, const char *tmpl, int n) {
 }
 
 void hex_to_str(uint32_t val, char *buf, int width) {
-    char temp[16];
-    int i = 0;
-    while (i < width || val > 0) {
+    char temp[9];
+    char *p = temp;
+    while (width-- > 0 || val) {
         uint32_t digit = val & 0xF;
-        temp[i++] = (digit < 10) ? ('0' + digit) : ('A' + digit - 10);
+        *p++ = (digit < 10) ? ('0' + digit) : ('A' + digit - 10);
         val >>= 4;
     }
-    while (i > 0) {
-        *buf++ = temp[--i];
+    while (p > temp) {
+        *buf++ = *--p;
     }
     *buf = '\0';
 }
 
-
 static void format_unit(uint32_t bytes, uint32_t div, const char *unit, char *buf) {
     uint32_t whole = bytes / div;
     uint32_t rem = bytes % div;
+    char *p = buf;
     if (rem == 0) {
-        int_to_str(whole, buf);
+        p = int_to_str(whole, p);
     } else {
         uint32_t frac = ((rem * 10) + div / 2) / div;
         if (frac >= 10) {
             whole++;
             frac = 0;
         }
-        char *p = buf;
-        int_to_str(whole, p);
-        p += strlen(p);
+        p = int_to_str(whole, p);
         *p++ = '.';
-        int_to_str(frac, p);
+        p = int_to_str(frac, p);
     }
-    strcat(buf, unit);
+    while ((*p++ = *unit++));
 }
 
 void format_size(uint32_t bytes, char *buf) {
@@ -153,21 +152,22 @@ void format_size(uint32_t bytes, char *buf) {
     } else if (bytes >= 1024) {
         format_unit(bytes, 1024, "KB", buf);
     } else {
-        int_to_str(bytes, buf);
-        strcat(buf, "B");
+        char *p = int_to_str(bytes, buf);
+        *p++ = 'B';
+        *p = '\0';
     }
 }
 
 void format_size_sectors(uint32_t sectors, char *buf) {
-    /* 2 sectors == 1 KiB. Work in KiB so the intermediate fits a uint32_t even
-     * for multi-GB cards (an 8 GB card is ~15.6M sectors -> ~7.8M KiB). */
     uint32_t kb = sectors / 2u;
     if (kb >= 1024 * 1024) {
         format_unit(kb, 1024 * 1024, "GB", buf);
     } else if (kb >= 1024) {
         format_unit(kb, 1024, "MB", buf);
     } else {
-        int_to_str(kb, buf);
-        strcat(buf, "KB");
+        char *p = int_to_str(kb, buf);
+        *p++ = 'K';
+        *p++ = 'B';
+        *p = '\0';
     }
 }

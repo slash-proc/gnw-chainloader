@@ -126,11 +126,11 @@ C_INCLUDES = \
 -Ideps/Drivers/CMSIS/Device/ST/STM32H7xx/Include \
 -Ideps/Drivers/CMSIS/Include
 
-CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -fomit-frame-pointer -fmerge-all-constants -g -DLZMA_ONESHOT -DLFS_NO_MALLOC -DLFS_NO_ASSERT -DLFS_NO_DEBUG -DLFS_NO_WARN -DLFS_NO_ERROR -DLFS_NO_TRACE -fno-builtin-strchr -DLFS_READONLY
+CFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES) $(OPT) -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -fomit-frame-pointer -fmerge-all-constants -g -DLZMA_ONESHOT -DLFS_NO_MALLOC -DLFS_NO_ASSERT -DLFS_NO_DEBUG -DLFS_NO_WARN -DLFS_NO_ERROR -DLFS_NO_TRACE -fno-builtin-strchr -DLFS_READONLY -fno-align-functions -fno-align-loops -fno-align-jumps -fno-align-labels
 ASFLAGS = $(MCU) $(OPT) -Wall -fdata-sections -ffunction-sections -g
 
 LIBS = -lc -lm -lnosys
-LDFLAGS = $(MCU) -specs=nano.specs $(LIBS) -Wl,--gc-sections -flto
+LDFLAGS = $(MCU) -specs=nano.specs $(LIBS) -Wl,--gc-sections -flto -flto-partition=one $(OPT)
 
 STUB_LDFLAGS = $(LDFLAGS) -Tlinker/STM32H7B0_FLASH_STUB.ld -Wl,-Map=$(STUB_BUILD_DIR)/stub.map
 APP_LDFLAGS  = $(LDFLAGS) -ffixed-r9 -Tlinker/STM32H7B0_RAM_APP.ld -Wl,-Map=$(APP_BUILD_DIR)/app.map

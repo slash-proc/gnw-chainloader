@@ -67,12 +67,13 @@ void crash_log_init(void)
  * a one-line summary on the next boot. crash_log.py still reads the full record over SWD. */
 int crash_log_pending(void) { return CRASH_LOG->magic == CRASH_LOG_MAGIC; }
 
+#include "utils.h"
+
 static char *crash_hex8(char *p, uint32_t v)
 {
-    static const char H[] = "0123456789ABCDEF";
     *p++ = '0'; *p++ = 'x';
-    for (int i = 28; i >= 0; i -= 4) *p++ = H[(v >> i) & 0xFu];
-    return p;
+    hex_to_str(v, p, 8);
+    return p + 8;
 }
 void crash_log_summary(char *buf, int n)
 {

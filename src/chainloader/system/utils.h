@@ -4,7 +4,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-void int_to_str(int val, char *buf);
+char *int_to_str(int val, char *buf);
 #ifdef ENABLE_EXTENDED_UTILS
 void int_to_str_w(int val, char *buf, int width);
 #endif
