@@ -2,6 +2,7 @@
 
 A terse, bullet-point record of completed bug fixes and tasks, newest first. Keep each entry to one line and link the commit(s) that landed it. (Entries below predate this convention, so they are not all commit-linked.)
 
+- **Introduce GitHub Actions CI/CD pipeline and optimize core utilities/LTO settings for GCC 15 size compatibility.**
 - **Chunk-based image decoding (JPEG/PNG/BMP) to eliminate SD card contention and audio stuttering in the background MP3 player.**
 - **Fix background MP3 playback partition context swap and optimize utility functions for code size.**
 - **Background MP3 playback: keep MP3 module resident and decode audio in the background UI loop (hardware-verified).**

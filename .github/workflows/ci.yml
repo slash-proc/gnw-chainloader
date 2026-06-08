@@ -1,0 +1,153 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+*'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      force_docker_build:
+        description: 'Force Docker image build and push'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: Run CI Pipeline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Gather metadata & check differences
+        id: prep
+        run: |
+          DOCKER_DEPS="Dockerfile scripts/docker/ requirements.txt requirements-dev.txt retro-go-sd/requirements.txt"
+          
+          # Find the highest/latest tag version in the repository
+          HIGHEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
+
+          if [[ "${{ github.ref }}" =~ refs/tags/ ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="$HIGHEST_TAG"
+          fi
+
+          if [[ "$TAG" =~ ^v?([0-9]+\.[0-9]+) ]]; then
+            MAJOR_MINOR="${BASH_REMATCH[1]}"
+          else
+            MAJOR_MINOR="latest"
+          fi
+
+          echo "curr_tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "major_minor_tag=$MAJOR_MINOR" >> "$GITHUB_OUTPUT"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ github.event.inputs.force_docker_build }}" = "true" ]; then
+              echo "docker_changed=true" >> "$GITHUB_OUTPUT"
+              echo "should_push=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docker_changed=false" >> "$GITHUB_OUTPUT"
+              echo "should_push=false" >> "$GITHUB_OUTPUT"
+            fi
+          elif [[ "${{ github.ref }}" =~ refs/tags/ ]]; then
+            # Tag pushes ALWAYS build and push the Docker image
+            echo "docker_changed=true" >> "$GITHUB_OUTPUT"
+            echo "should_push=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "pull_request" ]; then
+            # PRs: check if Docker deps changed for dry-run
+            if git diff --name-only origin/main...HEAD -- $DOCKER_DEPS | grep -q .; then
+              echo "docker_changed=true" >> "$GITHUB_OUTPUT"
+              echo "should_push=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "docker_changed=false" >> "$GITHUB_OUTPUT"
+              echo "should_push=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            # Push to main: build and push if Docker deps changed in the pushed commits
+            if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+              COMPARE_REF="HEAD~1"
+            else
+              COMPARE_REF="${{ github.event.before }}"
+            fi
+
+            if git diff --name-only "$COMPARE_REF" HEAD -- $DOCKER_DEPS | grep -q .; then
+              echo "docker_changed=true" >> "$GITHUB_OUTPUT"
+              echo "should_push=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "docker_changed=false" >> "$GITHUB_OUTPUT"
+              echo "should_push=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Build Docker Image Locally
+        if: steps.prep.outputs.docker_changed == 'true'
+        run: |
+          docker build -t slashproc/gnw-chainloader-builder:local .
+
+      - name: Pull & Tag Existing Docker Image
+        if: steps.prep.outputs.docker_changed == 'false'
+        run: |
+          # Try to pull the current tag, or the major_minor version, or fallback to latest, then tag as local
+          docker pull slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }} && \
+            docker tag slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }} slashproc/gnw-chainloader-builder:local || \
+          docker pull slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }} && \
+            docker tag slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }} slashproc/gnw-chainloader-builder:local || \
+          docker pull slashproc/gnw-chainloader-builder:latest && \
+            docker tag slashproc/gnw-chainloader-builder:latest slashproc/gnw-chainloader-builder:local
+
+      - name: Run Host QA Tests
+        run: |
+          docker run --rm \
+            -e HOST_UID=$(id -u) \
+            -e HOST_GID=$(id -g) \
+            -v ${{ github.workspace }}:/opt/workdir \
+            slashproc/gnw-chainloader-builder:local \
+            make qa-host-only
+
+      - name: Generate QA Report
+        if: always()
+        run: |
+          docker run --rm \
+            -e HOST_UID=$(id -u) \
+            -e HOST_GID=$(id -g) \
+            -v ${{ github.workspace }}:/opt/workdir \
+            slashproc/gnw-chainloader-builder:local \
+            make qa-report
+
+      - name: Upload QA Report Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: qa-report.html
+
+      - name: Log in to Docker Hub
+        if: steps.prep.outputs.should_push == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push Docker Image
+        if: steps.prep.outputs.should_push == 'true'
+        run: |
+          docker tag slashproc/gnw-chainloader-builder:local slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }}
+          docker tag slashproc/gnw-chainloader-builder:local slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }}
+          docker tag slashproc/gnw-chainloader-builder:local slashproc/gnw-chainloader-builder:latest
+          docker push slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }}
+          docker push slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }}
+          docker push slashproc/gnw-chainloader-builder:latest
