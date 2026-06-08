@@ -34,12 +34,14 @@ ifeq ($(PLATFORM),Linux)
 endif
 
 DOCKER_DEPS := Dockerfile scripts/docker/ requirements.txt requirements-dev.txt retro-go-sd/requirements.txt
-DOCKER_CHANGED := $(shell git diff --quiet $(RELEASE_VERSION) -- $(DOCKER_DEPS) 2>/dev/null || echo "dirty")
+# Check strictly for uncommitted modifications to the Docker build files
+DOCKER_CHANGED := $(shell git diff --quiet HEAD -- $(DOCKER_DEPS) 2>/dev/null || echo "dirty")
 ifneq ($(DOCKER_CHANGED),)
-    # subst /,- : a slash-bearing tag (e.g. backup/foo) is an invalid Docker image tag.
+    # Local modifications exist in Docker files -> generate local dirty tag
     DOCKER_TAG := $(subst /,-,$(shell git describe --tags --always --dirty 2>/dev/null || git rev-parse --short HEAD))
 else
-    DOCKER_TAG := $(RELEASE_VERSION)
+    # Docker files are pristine -> fetch the closest exact release tag (e.g., 0.5.0)
+    DOCKER_TAG := $(subst /,-,$(shell git describe --tags --abbrev=0 2>/dev/null || echo "latest"))
 endif
 CONTAINER_NAME  ?= chainloader-builder
 DOCKER_IMAGE    ?= slashproc/gnw-chainloader-builder:$(DOCKER_TAG)
