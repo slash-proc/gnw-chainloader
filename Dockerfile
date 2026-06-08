@@ -104,6 +104,7 @@ COPY ./requirements-dev.txt /requirements-dev.txt
 
 RUN apt-get update -y && \
     apt-get install -y --no-install-recommends \
+        bash-completion \
         ca-certificates \
         git \
         make \
