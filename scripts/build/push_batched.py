@@ -31,8 +31,10 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+# Add the gnwmanager submodule to sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "gnwmanager"))
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # scripts/ -> import `common`
-from common import lfs_gnwmanager_offset
 
 BANK1 = 0x08000000
 
@@ -76,8 +78,8 @@ def main():
     ap.add_argument("--debug", action="store_true",
                     help="also stream the debug log to the console (it is ALWAYS written to build/push_batched_debug.log)")
     ap.add_argument("--no-skip", action="store_true", help="push even if the device copy is unchanged (skips the hash read)")
-    ap.add_argument("--timeout", type=float, default=60.0, help="per-file wall-clock budget (s)")
     ap.add_argument("--start-timeout", type=float, default=90.0, help="start_gnwmanager wall-clock budget (s)")
+
     ap.add_argument("--rm", action="store_true",
                     help="remove the given device paths instead of pushing (positional args are device paths)")
     ap.add_argument("pairs", nargs="+", metavar="gnw_path[=local_path]")
@@ -130,14 +132,14 @@ def main():
         with time_budget(args.start_timeout, "start_gnwmanager"):
             gnw.start_gnwmanager()
         print(f"  ready in {time.time() - t0:.1f}s; ext flash {gnw.external_flash_size >> 20} MB", flush=True)
-        fs = gnw.filesystem(offset=lfs_gnwmanager_offset(gnw.external_flash_size))
+        fs = gnw.filesystem()
 
         if args.rm:
             removed = 0
             for i, gnw_path in enumerate(args.pairs, 1):
                 t = time.time()
                 try:
-                    with time_budget(args.timeout, f"rm {gnw_path}"):
+                    with time_budget(60.0, f"rm {gnw_path}"):
                         try:
                             fs.remove(gnw_path)
                             print(f"[{i}/{len(args.pairs)}] removed {gnw_path} ({time.time() - t:.1f}s)", flush=True)
@@ -156,9 +158,11 @@ def main():
         pushed = 0
         for i, (gnw_path, local) in enumerate(files, 1):
             data = local.read_bytes()
+            # Dynamic timeout: assume ~50 KB/s minimum speed, with a 60s floor
+            timeout = max(60.0, len(data) / (50 * 1024) + 10.0)
             t = time.time()
             try:
-                with time_budget(args.timeout, f"push {gnw_path}"):
+                with time_budget(timeout, f"push {gnw_path}"):
                     if not args.no_skip and sha256(data) == gnw_sha256(fs, Path(gnw_path)):
                         print(f"[{i}/{len(files)}] {gnw_path}: unchanged, skip", flush=True)
                         continue
