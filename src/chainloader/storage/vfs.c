@@ -15,6 +15,24 @@ static vfs_driver_t *g_drivers[8];
 static int g_driver_count = 0;
 static host_api_t g_host_api;
 
+static int (*g_orig_fat_mount)(uint32_t base_addr, uint32_t size) = NULL;
+static int (*g_orig_fat_unmount)(void) = NULL;
+static vfs_driver_t *g_fat_driver_ptr = NULL;
+
+static int wrap_fat_mount(uint32_t addr, uint32_t size) {
+    if (g_fat_driver_ptr && g_fat_driver_ptr->active_streams > 0) {
+        return (g_fat_driver_ptr->mounted_addr == addr) ? 0 : -1;
+    }
+    int r = g_orig_fat_mount(addr, size);
+    if (r == 0 && g_fat_driver_ptr) g_fat_driver_ptr->mounted_addr = addr;
+    return r;
+}
+
+static int wrap_fat_unmount(void) {
+    if (g_fat_driver_ptr && g_fat_driver_ptr->active_streams > 0) return 0;
+    return g_orig_fat_unmount();
+}
+
 /* A module flash address may be a flash OFFSET (the documented host-API convention) or an absolute
  * memory-mapped address (the loaded FAT driver hands us the partition's absolute base). Normalize
  * to an offset so the 0x90000000 base is never double-added (which faulted at 0x20540000). */
@@ -91,6 +109,9 @@ extern void fat_vfs_init(void);
 void vfs_init(void) {
     g_driver_count = 0;
     memset(g_drivers, 0, sizeof(g_drivers));
+    g_orig_fat_mount = NULL;
+    g_orig_fat_unmount = NULL;
+    g_fat_driver_ptr = NULL;
 
     lfs_vfs_init();
     fat_vfs_init();
@@ -112,19 +133,16 @@ void vfs_init(void) {
     g_host_api.get_fattime = board_rtc_get_fattime;
 }
 
-static bool g_lfs_rw_loaded = false;
-static bool g_fat_rw_loaded = false;
+bool g_lfs_rw_loaded = false;
+bool g_fat_rw_loaded = false;
 
-bool vfs_is_lfs_rw_loaded(void) {
-    return g_lfs_rw_loaded;
-}
-
-bool vfs_is_fat_rw_loaded(void) {
-    return g_fat_rw_loaded;
-}
+bool vfs_is_lfs_rw_loaded(void) { return g_lfs_rw_loaded; }
+bool vfs_is_fat_rw_loaded(void) { return g_fat_rw_loaded; }
 
 int vfs_register_driver(vfs_driver_t *driver) {
     if (g_driver_count >= 8) return -1;
+    driver->active_streams = 0;
+    driver->mounted_addr = 0;
     g_drivers[g_driver_count++] = driver;
     return 0;
 }
@@ -132,6 +150,21 @@ int vfs_register_driver(vfs_driver_t *driver) {
 vfs_driver_t* vfs_get_driver(const char *name) {
     for (int i = g_driver_count - 1; i >= 0; i--) {
         if (strcmp(g_drivers[i]->name, name) == 0) {
+            return g_drivers[i];
+        }
+    }
+    return NULL;
+}
+
+static vfs_driver_t *vfs_get_driver_for_partition(partition_info_t *part) {
+    if (!part) return NULL;
+    const char *dname = partition_driver_name(part);
+    if (!dname) return NULL;
+    if (strcmp(dname, "FAT") == 0 && part->address == SDCARD_SENTINEL_ADDR) {
+        return vfs_get_driver(dname);
+    }
+    for (int i = 0; i < g_driver_count; i++) {
+        if (strcmp(g_drivers[i]->name, dname) == 0) {
             return g_drivers[i];
         }
     }
@@ -147,8 +180,7 @@ static int read_from_partition(partition_info_t *part, const char *path,
                                void *dst, uint32_t max, uint32_t *out_size) {
     if (!part) return -1;
 
-    const char *dname = partition_driver_name(part);
-    vfs_driver_t *drv = dname ? vfs_get_driver(dname) : NULL;
+    vfs_driver_t *drv = vfs_get_driver_for_partition(part);
     if (!drv || !drv->mount || !drv->open || !drv->read) return -1;
     if (drv->mount(part->address, part->size) != 0) return -1;
 
@@ -228,21 +260,21 @@ static int find_best_module(const char *path) {
     int pcount = partition_get_count();
     int best = -1;
     uint32_t best_ver = 0;
-    for (int pass = 0; pass < 2; pass++) {        /* pass 0: SD only; pass 1: the rest */
-        for (int i = 0; i < pcount; i++) {
-            partition_info_t *part = partition_get_info(i);
-            if (!part) continue;
-            if ((pass == 0) != partition_is_sd(part)) continue;
+    for (int i = 0; i < pcount; i++) {
+        partition_info_t *part = partition_get_info(i);
+        if (!part) continue;
 
-            module_header_t hdr;                  /* aligned: uint32_t fields */
-            uint32_t got = 0;
-            if (read_from_partition(part, path, &hdr, sizeof(hdr), &got) != 0) continue;
-            /* reject a module built for a different firmware (magic + framework ABI) */
-            if (got < sizeof(hdr) ||
-                !module_abi_ok((const uint8_t *)&hdr, MODULE_MAGIC, MODULE_ABI_VERSION)) continue;
+        module_header_t hdr;                  /* aligned: uint32_t fields */
+        uint32_t got = 0;
+        if (read_from_partition(part, path, &hdr, sizeof(hdr), &got) != 0) continue;
+        /* reject a module built for a different firmware (magic + framework ABI) */
+        if (got < sizeof(hdr) ||
+            !module_abi_ok((const uint8_t *)&hdr, MODULE_MAGIC, MODULE_ABI_VERSION)) continue;
 
-            /* strict '>' so the first copy at the top version wins (SD-first). */
-            if (best < 0 || hdr.version > best_ver) { best = i; best_ver = hdr.version; }
+        bool is_sd = partition_is_sd(part);
+        if (best < 0 || hdr.version > best_ver || (hdr.version == best_ver && is_sd)) {
+            best = i;
+            best_ver = hdr.version;
         }
     }
     return best;
@@ -337,19 +369,8 @@ int vfs_lfs_free_kb(void) {
     return (r == 0) ? (int)(freesec / 2u) : -1;   /* 512-byte sectors -> KiB */
 }
 
-int vfs_lfs_write_file(const char *path, const void *data, uint32_t len) {
-    if (!vfs_is_lfs_rw_loaded())
-        vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
-    partition_info_t *p = vfs_main_lfs();
-    if (!p) return -1;
-    vfs_driver_t *drv = vfs_get_driver("LFS");
-    if (!drv || !drv->mount || !drv->open || !drv->write) return -1;   /* needs RW */
-    if (drv->mount(p->address, p->size) != 0) return -1;
-
-    /* Ensure the parent directory exists (LittleFS open won't auto-create it).
-     * Pack paths are one level deep (/i18n/x or /lang/x), so a single mkdir of
-     * the immediate parent suffices; an existing dir just errors harmlessly. */
-    if (drv->mkdir) {
+static void ensure_parent_dir(vfs_driver_t *drv, const char *path) {
+    if (drv && drv->mkdir) {
         const char *slash = strrchr(path, '/');
         if (slash && slash != path) {
             char dir[128];
@@ -361,6 +382,18 @@ int vfs_lfs_write_file(const char *path, const void *data, uint32_t len) {
             }
         }
     }
+}
+
+int vfs_lfs_write_file(const char *path, const void *data, uint32_t len) {
+    if (!vfs_is_lfs_rw_loaded())
+        vfs_load_dynamic_driver("LFS", "/fs/lfs.bin");
+    partition_info_t *p = vfs_main_lfs();
+    if (!p) return -1;
+    vfs_driver_t *drv = vfs_get_driver("LFS");
+    if (!drv || !drv->mount || !drv->open || !drv->write) return -1;   /* needs RW */
+    if (drv->mount(p->address, p->size) != 0) return -1;
+
+    ensure_parent_dir(drv, path);
 
     void *fctx = NULL;
     int rc = -1;
@@ -432,14 +465,7 @@ int vfs_install_copy(partition_info_t *sp_part, const char *sp,
     if (src->mount(sp_part->address, sp_part->size) != 0) return -1;
     if (dst->mount(dp_part->address, dp_part->size) != 0) { if (src->unmount) src->unmount(); return -1; }
 
-    if (dst->mkdir) {                              /* one-level parent (/i18n, /modules) */
-        const char *slash = strrchr(dp, '/');
-        if (slash && slash != dp) {
-            char dir[128];
-            uint32_t dn = (uint32_t)(slash - dp);
-            if (dn < sizeof(dir)) { memcpy(dir, dp, dn); dir[dn] = '\0'; dst->mkdir(dir); }
-        }
-    }
+    ensure_parent_dir(dst, dp);
 
     int r = vfs_copy_open_file(src, sp, dst, dp, size, NULL, NULL);
     if (dst->unmount) dst->unmount();
@@ -482,8 +508,12 @@ int vfs_stream_open_drv(vfs_stream_t *s, vfs_driver_t *drv, uint32_t addr, uint3
     if (!drv || !drv->mount || !drv->open || !drv->read || !drv->seek || !path) return -1;
     if (drv->mount(addr, size) != 0) return -1;
     void *ctx = NULL;
-    if (drv->open(path, 1 /* read */, &ctx) != 0) return -1;
+    if (drv->open(path, 1 /* read */, &ctx) != 0) {
+        if (drv->unmount) drv->unmount();
+        return -1;
+    }
     s->drv = drv; s->ctx = ctx;
+    drv->active_streams++;
     return 0;
 }
 
@@ -514,8 +544,15 @@ int vfs_stream_seek(vfs_stream_t *s, uint32_t off) {
     return s->drv->seek(s->ctx, off);
 }
 void vfs_stream_close(vfs_stream_t *s) {
-    if (s && s->drv && s->drv->close) s->drv->close(s->ctx);
-    if (s) { s->drv = NULL; s->ctx = NULL; }
+    if (s && s->drv) {
+        vfs_driver_t *drv = s->drv;
+        if (drv->close) drv->close(s->ctx);
+        if (drv->active_streams > 0) {
+            drv->active_streams--;
+        }
+        s->drv = NULL; s->ctx = NULL;
+        if (drv->unmount) drv->unmount();
+    }
 }
 
 int vfs_lfs_read(const char *path, void *dst, uint32_t max, uint32_t *out_size) {
@@ -643,8 +680,7 @@ bool vfs_module_available(const char *path) {
             bool sd = partition_is_sd(part);
             if ((pass == 0) != sd) continue;
 
-            const char *dname = partition_driver_name(part);
-            vfs_driver_t *drv = dname ? vfs_get_driver(dname) : NULL;
+            vfs_driver_t *drv = vfs_get_driver_for_partition(part);
             if (!drv || !drv->mount || !drv->open) continue;
             if (drv->mount(part->address, part->size) != 0) continue;
 
@@ -690,8 +726,16 @@ int vfs_load_dynamic_driver(const char *name, const char *bin_path) {
 
     /* Generic loader: bump-allocate RAM, relocate the PIE image, call init. */
     if (mod_load(bin_path, dyn, &g_host_api) && vfs_register_driver(dyn) == 0) {
-        if (strcmp(name, "LFS") == 0) g_lfs_rw_loaded = true;
-        else if (strcmp(name, "FAT") == 0) g_fat_rw_loaded = true;
+        if (strcmp(name, "LFS") == 0) {
+            g_lfs_rw_loaded = true;
+        } else if (strcmp(name, "FAT") == 0) {
+            g_fat_rw_loaded = true;
+            g_orig_fat_mount = dyn->mount;
+            g_orig_fat_unmount = dyn->unmount;
+            g_fat_driver_ptr = dyn;
+            dyn->mount = wrap_fat_mount;
+            dyn->unmount = wrap_fat_unmount;
+        }
         return 0;
     }
     return -1;

@@ -12,6 +12,7 @@
 #include "theme.h"
 #include "system/gui_api.h"
 #include "system/bench.h"
+#include "system/feature.h"
 #include "../../common/boot_magic.h"
 #include <string.h>
 
@@ -287,13 +288,12 @@ void ui_switch(ui_window_t *win) {
 }
 
 void ui_update(void) {
+    feature_bg_tick();
     uint16_t prev_input = input_get_state();
     input_update();
-    uint16_t curr_input = input_get_state();
     uint32_t now = HAL_GetTick();
 
-    bool was_idle = (now - g_last_activity_tick > UI_IDLE_TIMEOUT_MS);
-    if (curr_input != prev_input) {
+    if (input_get_state() != prev_input) {
         g_last_activity_tick = now;
     }
 
@@ -302,7 +302,7 @@ void ui_update(void) {
     }
 
     if (g_stack_ptr >= 0 && g_window_stack[g_stack_ptr]->update_content) {
-        if (!was_idle || !g_window_stack[g_stack_ptr]->allow_idle_hide) {
+        if (now - g_last_activity_tick <= UI_IDLE_TIMEOUT_MS || !g_window_stack[g_stack_ptr]->allow_idle_hide) {
             g_window_stack[g_stack_ptr]->update_content(g_window_stack[g_stack_ptr]);
         }
     }
@@ -421,14 +421,9 @@ static void ui_draw_battery_icon(int x, int y, int pct) {
  * the battery so a plugged-in state is obvious even at a full, non-animating charge. */
 #define BOLT_W 4
 #define BOLT_H 6
-static void ui_draw_bolt(int x, int y, uint16_t col) {
-    gui_draw_fill_rect(x + 2, y,     2, 1, col);
-    gui_draw_fill_rect(x + 1, y + 1, 2, 1, col);
-    gui_draw_fill_rect(x,     y + 2, 4, 1, col);   /* crossbar */
-    gui_draw_fill_rect(x + 2, y + 3, 2, 1, col);
-    gui_draw_fill_rect(x + 1, y + 4, 2, 1, col);
-    gui_draw_fill_rect(x,     y + 5, 2, 1, col);
-}
+
+
+
 
 /* RTL mirror of one piece's offset within the header readout cluster: in RTL the
  * piece is flipped to the opposite end (cluster_w - off - w), in LTR it's unchanged. */
@@ -496,9 +491,23 @@ static void ui_draw_header_impl(const char *title, bool solid) {
 
     gui_draw_text_aligned(gui_mirror_x(20, max_w, 0, SCREEN_WIDTH), 7, max_w, title, COLOR_FG, true, 0);
     gui_draw_text(cluster_x + clk_off, 7, clk, COLOR_FG);
-    if (charging) ui_draw_bolt(cluster_x + bolt_off, 8, COLOR_FG);
+    if (charging) {
+        int bx = cluster_x + bolt_off;
+        gui_draw_fill_rect(bx + 2, 8,  2, 1, COLOR_FG);
+        gui_draw_fill_rect(bx + 1, 9,  2, 1, COLOR_FG);
+        gui_draw_fill_rect(bx,     10, 4, 1, COLOR_FG);
+        gui_draw_fill_rect(bx + 2, 11, 2, 1, COLOR_FG);
+        gui_draw_fill_rect(bx + 1, 12, 2, 1, COLOR_FG);
+        gui_draw_fill_rect(bx,     13, 2, 1, COLOR_FG);
+    }
     ui_draw_battery_icon(cluster_x + icon_off, 5, pct);
     gui_draw_text(cluster_x + pct_off, 7, pctstr, COLOR_FG);
+    if (feature_is_bg_active()) {
+        int note_x = gui_is_rtl() ? (cluster_x + cluster_w + 5) : (cluster_x - 12);
+        gui_draw_fill_rect(note_x + 2, 8,  1, 5, COLOR_FG);
+        gui_draw_fill_rect(note_x + 3, 8,  2, 1, COLOR_FG);
+        gui_draw_fill_rect(note_x,     12, 3, 2, COLOR_FG);
+    }
 }
 
 void ui_draw_header(const char *title) {

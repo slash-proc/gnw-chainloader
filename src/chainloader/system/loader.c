@@ -7,6 +7,7 @@
 #include "system/feature.h"
 #include "storage/vfs.h"
 #include "ui/theme.h"
+#include "utils.h"
 #include <string.h>
 #include "stm32h7xx.h"
 
@@ -68,9 +69,7 @@ static void mod_rec_add(const char *path, uint32_t base, uint32_t flash, uint32_
         if (strncmp(g_mod_recs[i].path, path, sizeof(g_mod_recs[i].path)) == 0) { r = &g_mod_recs[i]; break; }
     if (!r) { if (g_mod_recs_n >= MOD_REC_MAX) return; r = &g_mod_recs[g_mod_recs_n++]; }
     r->base = base; r->flash = flash; r->ram = ram; r->flags = flags; r->reason = reason;
-    uint32_t i = 0;
-    for (; path[i] && i < sizeof(r->path) - 1; i++) r->path[i] = path[i];
-    r->path[i] = 0;
+    str_lcpy(r->path, sizeof(r->path), path);
 }
 
 /* r9 base for the last module load: data_base for an r9-pic (-msingle-pic-base) module, else 0. */
@@ -80,7 +79,7 @@ uint32_t g_mod_r9 = 0;
  * nothing the compiler emits between the set and the call clobbers r9. The r9-pic module keeps r9
  * callee-saved through its run + host-API calls, so deeper core->module callbacks stay addressable;
  * only the core->module crossing itself needs r9 re-established. */
-__attribute__((naked, noinline)) static void
+__attribute__((naked, noinline)) void
 call_feat_r9(const void *a0, const void *a1, void *fn, uint32_t r9base) {
     __asm__ volatile(
         "push {r9, lr}\n"   /* save caller's r9 + return addr */
@@ -104,6 +103,17 @@ void mod_invoke_r9(const void *a0, const void *a1, void *fn) {
  * two-base and re-establishes r9 at each core->module entry (mod_invoke_r9); the app is -ffixed-r9
  * so it never clobbers r9. -fPIC modules always full-copy. SWD-writable. */
 bool g_xip_enabled = true;
+
+static bool relocate_module(const module_rel_t *rel, uint32_t count, uint32_t T, uint32_t text_base, uint32_t data_base, uint32_t ram_origin, bool check_xip) {
+    for (uint32_t i = 0; i < count; i++) {
+        if ((rel[i].r_info & 0xFFu) != R_ARM_RELATIVE) continue;
+        if (rel[i].r_offset < sizeof(module_header_t)) continue;
+        if (check_xip && rel[i].r_offset < T) return false;
+        uint32_t *p = (uint32_t *)(ram_origin + rel[i].r_offset);
+        *p += (*p < T) ? text_base : (data_base - T);
+    }
+    return true;
+}
 
 /* XIP load: the module is a CONTIGUOUS file mapped at `flash_addr` (vfs_map_module verified the
  * contiguity). Execute .text/.rodata in place from flash and copy only .data/.got/.rel.dyn + .bss
@@ -137,13 +147,7 @@ static void *mod_load_image_xip(const char *path, uint32_t flash_addr, uint32_t 
 
     if (h->reloc_offset && h->reloc_count) {
         const module_rel_t *rel = (const module_rel_t *)(flash_addr + h->reloc_offset);
-        for (uint32_t i = 0; i < h->reloc_count; i++) {
-            if ((rel[i].r_info & 0xFFu) != R_ARM_RELATIVE) continue;
-            if (rel[i].r_offset < sizeof(module_header_t)) continue;  /* header offsets: consumed, not relocated */
-            if (rel[i].r_offset < T) return NULL;     /* a relocation into read-only flash .text: can't XIP */
-            uint32_t *p = (uint32_t *)(ram_origin + rel[i].r_offset);  /* = slot + (r_offset - T) */
-            *p += (*p < T) ? text_base : (data_base - T);
-        }
+        if (!relocate_module(rel, h->reloc_count, T, text_base, data_base, ram_origin, true)) return NULL;
     }
 
     if (h->bss_size) memset((void *)(ram_origin + h->bss_offset), 0, h->bss_size);
@@ -212,13 +216,8 @@ static void *mod_load_image(const char *path) {
         uint32_t T = h->data_offset;
         uint32_t text_base = (uint32_t)slot;
         uint32_t data_base = (uint32_t)slot + T;
-        module_rel_t *rel = (module_rel_t *)(slot + h->reloc_offset);
-        for (uint32_t i = 0; i < h->reloc_count; i++) {
-            if ((rel[i].r_info & 0xFFu) != R_ARM_RELATIVE) continue;
-            if (rel[i].r_offset < sizeof(module_header_t)) continue;
-            uint32_t *p = (uint32_t *)(slot + rel[i].r_offset);
-            *p += (*p < T) ? text_base : (data_base - T);
-        }
+        const module_rel_t *rel = (const module_rel_t *)(slot + h->reloc_offset);
+        relocate_module(rel, h->reloc_count, T, text_base, data_base, (uint32_t)slot, false);
     }
 
     /* Zero .bss (not present in the image). */
@@ -241,50 +240,39 @@ static void *mod_load_image(const char *path) {
     return entry;
 }
 
-bool mod_load(const char *path, vfs_driver_t *out_drv, const host_api_t *host) {
-    if (!out_drv || !host) return false;
+static bool mod_load_generic(const char *path, const void *a0, const void *a1) {
     void *entry = mod_load_image(path);
     if (!entry) return false;
-    ((void (*)(vfs_driver_t *, const host_api_t *))entry)(out_drv, host);
+    mod_invoke_r9(a0, a1, entry);
     return true;
+}
+
+bool mod_load(const char *path, vfs_driver_t *out_drv, const host_api_t *host) {
+    if (!out_drv || !host) return false;
+    return mod_load_generic(path, out_drv, host);
 }
 
 bool mod_load_theme(const char *path, const theme_host_api_t *host) {
     if (!host) return false;
-    void *entry = mod_load_image(path);
-    if (!entry) return false;
-    ((void (*)(const theme_host_api_t *))entry)(host);
-    return true;
+    return mod_load_generic(path, host, NULL);
 }
 
 bool mod_load_language(const char *path, const lang_host_t *host, lang_api_t *out_api) {
     if (!host || !out_api) return false;
-    void *entry = mod_load_image(path);
-    if (!entry) return false;
-    ((void (*)(const lang_host_t *, lang_api_t *))entry)(host, out_api);
-    return true;
+    return mod_load_generic(path, host, out_api);
 }
 
 bool mod_load_installer(const char *path, const installer_host_t *host, installer_api_t *out_api) {
     if (!host || !out_api) return false;
-    void *entry = mod_load_image(path);   /* transient: caller brackets with mod_pool_mark/reset */
-    if (!entry) return false;
-    ((void (*)(const installer_host_t *, installer_api_t *))entry)(host, out_api);
-    return true;
+    return mod_load_generic(path, host, out_api);
 }
 
 bool mod_load_fileops(const char *path, const fileops_host_t *host, fileops_api_t *out_api) {
     if (!host || !out_api) return false;
-    void *entry = mod_load_image(path);   /* transient: caller brackets with mod_pool_mark/reset */
-    if (!entry) return false;
-    ((void (*)(const fileops_host_t *, fileops_api_t *))entry)(host, out_api);
-    return true;
+    return mod_load_generic(path, host, out_api);
 }
 
 bool mod_load_feature(const char *path, const feature_host_t *host, feature_api_t *out_api) {
     if (!host || !out_api) return false;
-    void *entry = mod_load_image(path);   /* sets g_mod_r9 for an r9-pic module */
-    if (!entry) return false;
-    mod_invoke_r9(host, out_api, entry);   /* init_module(host, out_api), r9 set for an r9-pic module */
-    return true;
+    return mod_load_generic(path, host, out_api);
 }

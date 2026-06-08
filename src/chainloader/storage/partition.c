@@ -584,22 +584,21 @@ bool partition_is_sd(const partition_info_t *p) {
     return p && p->address == SDCARD_SENTINEL_ADDR;
 }
 
-const char *partition_fs_code(const partition_info_t *p) {
+const char *partition_driver_name(const partition_info_t *p) {
     if (!p || !p->type) return NULL;
-    char t0 = p->type[0], t1 = p->type[1];
+    char t0 = p->type[0];
     if (t0 == 'L') return "LFS";
-    if (t0 == 'F' && t1 == 'r') return "FROG";
-    if (t0 == 'F' && t1 == 'A') return "FAT";
+    if (t0 == 'F') {
+        if (p->type[1] == 'r') return "FROGFS";
+        if (p->type[1] == 'A') return "FAT";
+    }
     return NULL;
 }
 
-const char *partition_driver_name(const partition_info_t *p) {
-    if (!p || !p->type) return NULL;
-    char t0 = p->type[0], t1 = p->type[1];
-    if (t0 == 'L') return "LFS";
-    if (t0 == 'F' && t1 == 'r') return "FROGFS";
-    if (t0 == 'F' && t1 == 'A') return "FAT";
-    return NULL;
+const char *partition_fs_code(const partition_info_t *p) {
+    const char *dn = partition_driver_name(p);
+    if (dn && dn[0] == 'F' && dn[1] == 'R') return "FROG";
+    return dn;
 }
 
 /* --- Partition Operations --- */

@@ -126,6 +126,7 @@ typedef struct {
      * right-pane label/value row (wraps ui_list_pane_row) for a dual-pane detail pane. */
     void (*run_view)(const ui_view_desc_t *desc);
     void (*pane_row)(int slot, const char *label, const char *value, bool marquee, uint32_t tick);
+    void (*register_bg_tick)(void (*tick)(void));
 } feature_host_t;
 
 typedef struct {
@@ -142,6 +143,8 @@ bool mod_load_feature(const char *path, const feature_host_t *host, feature_api_
 /* Scan /modules/features, peek each header, register those declaring a menu id/ext.
  * Run once after the filesystems are up. */
 void feature_discover(void);
+bool feature_is_bg_active(void);
+void feature_bg_tick(void);
 /* Count of registered entries for a menu (MODULE_MENU_TOOLS / _SETTINGS). */
 int  feature_count(int menu_id);
 /* Label of the nth entry within a menu (in registration order). "" if out of range. */

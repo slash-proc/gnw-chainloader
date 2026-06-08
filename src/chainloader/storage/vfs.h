@@ -42,6 +42,9 @@ typedef struct {
     /* Create a file CONTIGUOUS via f_expand(size) so it is XIP-able in place. RW FAT on memory-mapped
      * flash only; NULL on other drivers (the caller falls back to open). 0 on success. */
     int (*open_expand)(const char *path, uint32_t size, void **file_ctx);
+    
+    int active_streams;
+    uint32_t mounted_addr;
 } vfs_driver_t;
 
 /* Streaming-copy result codes (vfs_copy_open_file). */
@@ -85,6 +88,8 @@ vfs_driver_t* vfs_get_driver(const char *name);
 // Loader helper
 int vfs_load_dynamic_driver(const char *name, const char *bin_path);
 void vfs_ensure_rw(const char *name);   /* load the RW driver for a filesystem on demand */
+extern bool g_lfs_rw_loaded;
+extern bool g_fat_rw_loaded;
 bool vfs_is_lfs_rw_loaded(void);
 bool vfs_is_fat_rw_loaded(void);
 

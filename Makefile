@@ -276,8 +276,8 @@ $(FATFS_SRC_DIR)/%: deps/FatFs/% | $(FATFS_SRC_DIR)
 # makes it see the SAME staged ff.h/ffconf.h as ff.c, so struct layouts match.
 # PIE module like lfs_rw: -fPIC + -DMODULE_BUILD (header stub) + module.ld -pie so
 # the loader relocates it to a bump-allocated address (full RW+exFAT FatFs here).
-MODULE_CFLAGS = $(MCU) -DUSE_HAL_DRIVER -DSTM32H7B0xx -DNDEBUG -DMODULE_BUILD -DMODULE_VERSION=1 -fPIC -Isrc/chainloader -I$(FATFS_SRC_DIR) -Ideps/FatFs -Ideps/Core/Inc -Ideps/Drivers/STM32H7xx_HAL_Driver/Inc -Ideps/Drivers/CMSIS/Device/ST/STM32H7xx/Include -Ideps/Drivers/CMSIS/Include -Os -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables
-MODULE_LDFLAGS = $(MCU) -specs=nano.specs -lc -lm -lnosys -Wl,--gc-sections -flto -fPIC -pie -Tsrc/modules/module.ld
+MODULE_CFLAGS = $(MCU) -DUSE_HAL_DRIVER -DSTM32H7B0xx -DNDEBUG -DMODULE_BUILD -DMODULE_VERSION=1 -fPIC -ffixed-r9 -Isrc/chainloader -I$(FATFS_SRC_DIR) -Ideps/FatFs -Ideps/Core/Inc -Ideps/Drivers/STM32H7xx_HAL_Driver/Inc -Ideps/Drivers/CMSIS/Device/ST/STM32H7xx/Include -Ideps/Drivers/CMSIS/Include -Os -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables
+MODULE_LDFLAGS = $(MCU) -specs=nano.specs -lc -lm -lnosys -Wl,--gc-sections -flto -fPIC -ffixed-r9 -pie -Tsrc/modules/module.ld
 
 $(MODULE_BUILD_DIR)/fatfs/%.o: src/modules/filesystems/fatfs/%.c $(FATFS_STAGED_HDRS) | $(MODULE_BUILD_DIR)/fatfs
 	@mkdir -p $(dir $@)
@@ -311,8 +311,8 @@ $(MODULE_BUILD_DIR)/lfs_rw/lfs_util.o
 # PIE module: -fPIC (NOT -msingle-pic-base, so no r9), -DMODULE_BUILD enables the
 # header stub; linked -pie with the shared module.ld so the linker emits
 # R_ARM_RELATIVE entries the loader patches by the load address.
-MODULE_LFS_CFLAGS = $(MCU) -DUSE_HAL_DRIVER -DSTM32H7B0xx -DNDEBUG -DMODULE_BUILD -DMODULE_VERSION=1 -fPIC -Isrc/chainloader -Ideps/littlefs -Ideps/Core/Inc -Ideps/Drivers/STM32H7xx_HAL_Driver/Inc -Ideps/Drivers/CMSIS/Device/ST/STM32H7xx/Include -Ideps/Drivers/CMSIS/Include -Os -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-builtin-strchr -DLFS_NO_MALLOC -DLFS_NO_ASSERT -DLFS_NO_DEBUG -DLFS_NO_WARN -DLFS_NO_ERROR -DLFS_NO_TRACE
-MODULE_LFS_LDFLAGS = $(MCU) -specs=nano.specs -lc -lm -lnosys -Wl,--gc-sections -flto -fPIC -pie -Tsrc/modules/module.ld
+MODULE_LFS_CFLAGS = $(MCU) -DUSE_HAL_DRIVER -DSTM32H7B0xx -DNDEBUG -DMODULE_BUILD -DMODULE_VERSION=1 -fPIC -ffixed-r9 -Isrc/chainloader -Ideps/littlefs -Ideps/Core/Inc -Ideps/Drivers/STM32H7xx_HAL_Driver/Inc -Ideps/Drivers/CMSIS/Device/ST/STM32H7xx/Include -Ideps/Drivers/CMSIS/Include -Os -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables -fno-builtin-strchr -DLFS_NO_MALLOC -DLFS_NO_ASSERT -DLFS_NO_DEBUG -DLFS_NO_WARN -DLFS_NO_ERROR -DLFS_NO_TRACE
+MODULE_LFS_LDFLAGS = $(MCU) -specs=nano.specs -lc -lm -lnosys -Wl,--gc-sections -flto -fPIC -ffixed-r9 -pie -Tsrc/modules/module.ld
 
 $(MODULE_BUILD_DIR)/lfs_rw/%.o: src/modules/filesystems/lfs_rw/%.c | $(MODULE_BUILD_DIR)/lfs_rw
 	@mkdir -p $(dir $@)
@@ -339,8 +339,8 @@ MODULE_THEME_OBJS = \
 $(MODULE_BUILD_DIR)/theme/module_entry.o \
 $(MODULE_BUILD_DIR)/theme/assets_gen.o
 
-MODULE_THEME_CFLAGS = $(MCU) -DUSE_HAL_DRIVER -DSTM32H7B0xx -DNDEBUG -DMODULE_BUILD -DMODULE_VERSION=1 -fPIC -Isrc/chainloader -Ideps/Core/Inc -Ideps/Drivers/STM32H7xx_HAL_Driver/Inc -Ideps/Drivers/CMSIS/Device/ST/STM32H7xx/Include -Ideps/Drivers/CMSIS/Include -Os -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables
-MODULE_THEME_LDFLAGS = $(MCU) -specs=nano.specs -lc -lm -lnosys -Wl,--gc-sections -flto -fPIC -pie -Tsrc/modules/module.ld
+MODULE_THEME_CFLAGS = $(MCU) -DUSE_HAL_DRIVER -DSTM32H7B0xx -DNDEBUG -DMODULE_BUILD -DMODULE_VERSION=1 -fPIC -ffixed-r9 -Isrc/chainloader -Ideps/Core/Inc -Ideps/Drivers/STM32H7xx_HAL_Driver/Inc -Ideps/Drivers/CMSIS/Device/ST/STM32H7xx/Include -Ideps/Drivers/CMSIS/Include -Os -Wall -fdata-sections -ffunction-sections -flto -fno-exceptions -fno-unwind-tables -fno-asynchronous-unwind-tables
+MODULE_THEME_LDFLAGS = $(MCU) -specs=nano.specs -lc -lm -lnosys -Wl,--gc-sections -flto -fPIC -ffixed-r9 -pie -Tsrc/modules/module.ld
 
 $(MODULE_BUILD_DIR)/theme/module_entry.o: src/modules/theme/module_entry.c src/chainloader/assets_gen.h | $(MODULE_BUILD_DIR)/theme
 	@mkdir -p $(dir $@)
@@ -438,9 +438,9 @@ $(BUILD_DIR)/example.bin: $(MODULE_BUILD_DIR)/features/example/example.elf
 # RAM / state / load model), read from the loader registry via the feature host. English-only, so
 # no strings. Rebuilt AS a module (the in-core view is disabled to hold the 40K stub ceiling).
 # Module Overview is a trivial list view (no latency-sensitive loops), so it XIPs from the store like mp3.
-MODULE_MODOVERVIEW_CFLAGS = $(MODULE_THEME_CFLAGS) $(MODULE_XIP) -DMODULE_FLAGS='(MOD_FLAG_TRANSIENT|MOD_FLAG_R9_PIC)' \
+MODULE_MODOVERVIEW_CFLAGS = $(filter-out -ffixed-r9,$(MODULE_THEME_CFLAGS)) $(MODULE_XIP) -DMODULE_FLAGS='(MOD_FLAG_TRANSIENT|MOD_FLAG_R9_PIC)' \
     -DMODULE_MENU_ID=MODULE_MENU_TOOLS -DMODULE_MENU_LABEL='"Module Overview"'
-MODULE_MODOVERVIEW_LDFLAGS = $(MODULE_THEME_LDFLAGS) $(MODULE_XIP)
+MODULE_MODOVERVIEW_LDFLAGS = $(filter-out -ffixed-r9,$(MODULE_THEME_LDFLAGS)) $(MODULE_XIP)
 
 $(MODULE_BUILD_DIR)/features/modoverview/module_entry.o: src/modules/features/modoverview/module_entry.c
 	@mkdir -p $(dir $@)
@@ -492,10 +492,10 @@ MP3_GEN = $(MODULE_BUILD_DIR)/features/mp3/mp3_strings_gen
 # and bus-fault). Must be on the -flto link too.
 MODULE_XIP = -msingle-pic-base -mpic-register=r9 -mno-pic-data-is-text-relative
 # MP3 player is FAT-XIP: the decode runs fine from flash, the audio DMA buffer (RAM slot) absorbs the latency.
-MODULE_MP3_CFLAGS = $(MODULE_THEME_CFLAGS) $(MODULE_XIP) -Isrc/modules/features/mp3 -I$(MODULE_BUILD_DIR)/features/mp3 \
+MODULE_MP3_CFLAGS = $(filter-out -ffixed-r9,$(MODULE_THEME_CFLAGS)) $(MODULE_XIP) -Isrc/modules/features/mp3 -I$(MODULE_BUILD_DIR)/features/mp3 \
     -DMODULE_FLAGS='(MOD_FLAG_TRANSIENT|MOD_FLAG_R9_PIC)' \
     -DMODULE_MENU_ID=MODULE_MENU_TOOLS -DMODULE_MENU_LABEL='"MP3 Player"' -DMODULE_FILE_EXT='"mp3"'
-MODULE_MP3_LDFLAGS = $(MODULE_THEME_LDFLAGS) $(MODULE_XIP)
+MODULE_MP3_LDFLAGS = $(filter-out -ffixed-r9,$(MODULE_THEME_LDFLAGS)) $(MODULE_XIP)
 
 # One recipe emits both .c and .h; depend .h on .c (not a dual-target rule) so parallel make
 # doesn't run cook_modstrings twice and race.

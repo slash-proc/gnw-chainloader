@@ -4,23 +4,18 @@
 void int_to_str(int val, char *buf) {
     char temp[16];
     int i = 0;
-    if (val == 0) {
-        buf[0] = '0';
-        buf[1] = '\0';
-        return;
-    }
     if (val < 0) {
         *buf++ = '-';
         val = -val;
     }
-    while (val > 0) {
+    do {
         temp[i++] = '0' + (val % 10);
         val /= 10;
+    } while (val > 0);
+    while (i > 0) {
+        *buf++ = temp[--i];
     }
-    for (int j = 0; j < i; j++) {
-        buf[j] = temp[i - 1 - j];
-    }
-    buf[i] = '\0';
+    *buf = '\0';
 }
 
 #ifdef ENABLE_EXTENDED_UTILS
@@ -28,27 +23,21 @@ void int_to_str_w(int val, char *buf, int width) {
     char temp[16];
     int i = 0;
     int is_neg = 0;
-    if (val == 0) {
-        while (i < width) {
-            temp[i++] = '0';
-        }
-    } else {
-        if (val < 0) {
-            is_neg = 1;
-            val = -val;
-        }
-        while (val > 0 || i < width) {
-            temp[i++] = '0' + (val % 10);
-            val /= 10;
-        }
-        if (is_neg) {
-            temp[i++] = '-';
-        }
+    if (val < 0) {
+        is_neg = 1;
+        val = -val;
     }
-    for (int j = 0; j < i; j++) {
-        buf[j] = temp[i - 1 - j];
+    do {
+        temp[i++] = '0' + (val % 10);
+        val /= 10;
+    } while (val > 0 || i < width);
+    if (is_neg) {
+        temp[i++] = '-';
     }
-    buf[i] = '\0';
+    while (i > 0) {
+        *buf++ = temp[--i];
+    }
+    *buf = '\0';
 }
 #endif
 
@@ -58,67 +47,69 @@ void int_to_str_w(int val, char *buf, int width) {
  * the safety net behind STABILITY IS LAW: bad/oversized data degrades to a clipped
  * label, never a freeze. */
 void str_lcpy(char *dst, int cap, const char *src) {
-    int n = 0;
     if (cap <= 0) return;
-    while (n < cap - 1 && src[n]) { dst[n] = src[n]; n++; }
-    dst[n] = '\0';
+    while (--cap > 0 && *src) {
+        *dst++ = *src++;
+    }
+    *dst = '\0';
 }
 
 void str_lcat(char *dst, int cap, const char *src) {
-    int n = 0;
     if (cap <= 0) return;
-    while (n < cap - 1 && dst[n]) n++;          /* bounded walk to current end */
-    while (n < cap - 1 && *src) dst[n++] = *src++;
-    dst[n] = '\0';
+    while (--cap > 0 && *dst) dst++;
+    while (cap > 0 && *src) {
+        *dst++ = *src++;
+        cap--;
+    }
+    *dst = '\0';
+}
+
+static inline char to_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? c + 32 : c;
 }
 
 bool ext_list_match(const char *list, const char *ext) {
     if (!list || !ext) return false;
-    while (*list) {                              /* walk each comma-separated token */
-        const char *a = list, *b = ext;
-        for (;;) {
-            char x = (*a == ',') ? '\0' : *a;    /* ',' (or end) terminates the token */
-            char y = *b;
-            if (x >= 'A' && x <= 'Z') x += 32;
-            if (y >= 'A' && y <= 'Z') y += 32;
-            if (x != y) break;                   /* token != ext: try the next token */
-            if (x == '\0') return true;          /* both ended together: a match */
-            a++; b++;
+    while (*list) {
+        const char *b = ext;
+        while (*list && *list != ',') {
+            if (to_lower(*list) != to_lower(*b)) break;
+            list++;
+            if (*b) b++;
         }
-        while (*list && *list != ',') list++;    /* skip the rest of this token */
-        if (*list == ',') list++;                /* and the comma */
+        if (*b == '\0' && (*list == '\0' || *list == ',')) return true;
+        while (*list && *list != ',') list++;
+        if (*list == ',') list++;
     }
     return false;
+}
+
+static void str_fmt_impl(char *dst, int cap, const char *tmpl, char fmt_char, const char *val_str) {
+    if (cap <= 0) return;
+    char *end = dst + cap - 1;
+    bool done = false;
+    while (*tmpl && dst < end) {
+        if (!done && tmpl[0] == '%' && tmpl[1] == fmt_char) {
+            tmpl += 2;
+            while (*val_str && dst < end) {
+                *dst++ = *val_str++;
+            }
+            done = true;
+        } else {
+            *dst++ = *tmpl++;
+        }
+    }
+    *dst = '\0';
+}
+
+void str_fmt1_str(char *dst, int cap, const char *tmpl, const char *s) {
+    str_fmt_impl(dst, cap, tmpl, 's', s);
 }
 
 void str_fmt1_int(char *dst, int cap, const char *tmpl, int n) {
     char num[16];
     int_to_str(n, num);
-    int i = 0, done = 0;
-    while (*tmpl && i < cap - 1) {
-        if (!done && tmpl[0] == '%' && tmpl[1] == 'd') {
-            for (const char *p = num; *p && i < cap - 1; p++) dst[i++] = *p;
-            tmpl += 2;
-            done = 1;
-        } else {
-            dst[i++] = *tmpl++;
-        }
-    }
-    if (cap > 0) dst[i] = '\0';
-}
-
-void str_fmt1_str(char *dst, int cap, const char *tmpl, const char *s) {
-    int i = 0, done = 0;
-    while (*tmpl && i < cap - 1) {
-        if (!done && tmpl[0] == '%' && tmpl[1] == 's') {
-            for (const char *p = s; *p && i < cap - 1; p++) dst[i++] = *p;
-            tmpl += 2;
-            done = 1;
-        } else {
-            dst[i++] = *tmpl++;
-        }
-    }
-    if (cap > 0) dst[i] = '\0';
+    str_fmt_impl(dst, cap, tmpl, 'd', num);
 }
 
 void hex_to_str(uint32_t val, char *buf, int width) {
@@ -126,14 +117,15 @@ void hex_to_str(uint32_t val, char *buf, int width) {
     int i = 0;
     while (i < width || val > 0) {
         uint32_t digit = val & 0xF;
-        temp[i++] = (digit < 10) ? ('0' + digit) : ('A' + (digit - 10));
+        temp[i++] = (digit < 10) ? ('0' + digit) : ('A' + digit - 10);
         val >>= 4;
     }
-    for (int j = 0; j < i; j++) {
-        buf[j] = temp[i - 1 - j];
+    while (i > 0) {
+        *buf++ = temp[--i];
     }
-    buf[i] = '\0';
+    *buf = '\0';
 }
+
 
 static void format_unit(uint32_t bytes, uint32_t div, const char *unit, char *buf) {
     uint32_t whole = bytes / div;

@@ -31,27 +31,11 @@ typedef struct {
 static feature_entry_t g_feat[MAX_FEATURES];
 static int g_feat_count = 0;
 
-/* SWD-observable feature-discovery trace: exactly where each /modules/features file is dropped, so
- * a host can read why feature_count ends up 0 (no OCR needed). Read by symbol g_feat_dbg. */
-struct {
-    uint32_t discover_calls;  /* times feature_discover ran (0 = never called) */
-    uint32_t enumerated;      /* files the LFS enum handed to the callback (0 = dir empty/missing) */
-    uint32_t hdr_read_fail;   /* vfs_lfs_read_header failed */
-    uint32_t magic_bad;       /* magic != MODULE_MAGIC */
-    uint32_t abi_bad;         /* abi != MODULE_ABI_VERSION */
-    uint32_t not_feature;     /* no menu_id and no file_ext */
-    uint32_t registered;      /* added to the menu */
-    uint32_t last_magic;      /* last file's header magic */
-    uint32_t last_abi;        /* last file's header abi */
-    char     last_name[28];   /* last enumerated filename */
-} g_feat_dbg;
 
 /* feature_discover() callback: `name` is a file under /modules/features. Peek its
  * header; if it's a valid feature module (magic + ABI ok, declares a menu/ext),
  * register it. */
 static void feat_scan_cb(const char *name) {
-    g_feat_dbg.enumerated++;
-    str_lcpy(g_feat_dbg.last_name, sizeof(g_feat_dbg.last_name), name);
     if (g_feat_count >= MAX_FEATURES) return;
     char path[64];
     str_lcpy(path, sizeof(path), FEATURE_DIR "/");
@@ -65,13 +49,10 @@ static void feat_scan_cb(const char *name) {
     uint32_t faddr = 0, fsz = 0;
     if (vfs_map_file(path, &faddr, &fsz) == 0 && fsz >= sizeof(h))
         memcpy(&h, (const void *)faddr, sizeof(h));
-    else if (vfs_lfs_read_header(path, &h, sizeof(h)) != 0) { g_feat_dbg.hdr_read_fail++; return; }
-    g_feat_dbg.last_magic = h.magic;
-    g_feat_dbg.last_abi   = h.abi;
-    if (h.magic != MODULE_MAGIC)     { g_feat_dbg.magic_bad++; return; }
-    if (h.abi != MODULE_ABI_VERSION) { g_feat_dbg.abi_bad++;   return; }
-    if (h.menu_id == MODULE_MENU_NONE && h.file_ext[0] == '\0') { g_feat_dbg.not_feature++; return; }   /* not a feature */
-    g_feat_dbg.registered++;
+    else if (vfs_lfs_read_header(path, &h, sizeof(h)) != 0) return;
+    if (h.magic != MODULE_MAGIC)     return;
+    if (h.abi != MODULE_ABI_VERSION) return;
+    if (h.menu_id == MODULE_MENU_NONE && h.file_ext[0] == '\0') return;   /* not a feature */
 
     feature_entry_t *e = &g_feat[g_feat_count++];
     e->menu_id = h.menu_id;
@@ -85,7 +66,6 @@ static void feat_scan_cb(const char *name) {
 }
 
 void feature_discover(void) {
-    g_feat_dbg.discover_calls++;
     /* Bring up the full LFN FAT-RW driver from the store BEFORE scanning it, so the store scan (and
      * every later FAT access) goes through it -- not the in-core 8.3 RO reader, which mishandles the
      * LFN directory entries pyfatfs writes (even for 8.3-clean names) and silently drops a second
@@ -141,14 +121,25 @@ const char *feature_path_for_ext(const char *ext) {
 }
 
 /* --- the host vtable handed to a running feature module --- */
-static int feat_just_pressed(int b) { return input_just_pressed((input_button_t)b) ? 1 : 0; }
-static int feat_is_pressed(int b)   { return input_is_pressed((input_button_t)b) ? 1 : 0; }
+static int feat_just_pressed(int b) { return input_just_pressed((input_button_t)b); }
+static int feat_is_pressed(int b)   { return input_is_pressed((input_button_t)b); }
 
 /* Pull-based file streaming for a file launch. The partition the file lives on is stashed by
  * feat_run; one file is open at a time (a player streams a single media file). */
 static const partition_info_t *g_feat_src;
-static vfs_stream_t             g_feat_stream;   /* the one open media stream (shared vfs_stream_* mechanism) */
+#define MAX_FEAT_STREAMS 2
+static vfs_stream_t             g_feat_streams[MAX_FEAT_STREAMS];
+static bool                     g_feat_stream_used[MAX_FEAT_STREAMS];
+
+static void (*g_bg_tick)(void) = NULL;
+static uint32_t                 g_bg_r9 = 0;
 static const char              *g_feat_modpath;   /* the running module's path (for state files) */
+static void (*g_bg_run)(const feature_host_t *, const char *) = NULL;
+static const partition_info_t  *g_bg_src = NULL;
+static char                     g_bg_modpath[64] = "";
+static uint32_t                 g_bg_pool_mark = 0;
+static void (*g_curr_run)(const feature_host_t *, const char *) = NULL;
+static uint32_t                 g_curr_feat_r9 = 0;
 
 /* Per-module state file: /modules/state/<module basename>. */
 static void feat_state_path(char *out, int cap) {
@@ -217,23 +208,52 @@ static void *feat_file_open(const char *path) {
     if (!d) return NULL;
     /* The transient module load scanned + mounted all filesystems to find the .bin, disturbing
      * the source mount; vfs_stream_open_drv re-mounts the source partition before opening. One
-     * media stream at a time -> the shared g_feat_stream handle (the same vfs_stream_* primitive
+     * media stream at a time -> the shared streams (the same vfs_stream_* primitive
      * the font pager uses, on its OWN handle, so the two never clash). */
-    if (vfs_stream_open_drv(&g_feat_stream, d, g_feat_src->address, g_feat_src->size, path) != 0)
+    int idx = -1;
+    for (int i = 0; i < MAX_FEAT_STREAMS; i++) {
+        if (!g_feat_stream_used[i]) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0) return NULL;
+    vfs_stream_t *s = &g_feat_streams[idx];
+    if (vfs_stream_open_drv(s, d, g_feat_src->address, g_feat_src->size, path) != 0)
         return NULL;
-    return &g_feat_stream;
+    g_feat_stream_used[idx] = true;
+    return s;
 }
 static int feat_file_read(void *f, void *buf, uint32_t n) {
-    (void)f;   /* one media stream at a time -> the shared g_feat_stream handle */
-    return vfs_stream_read(&g_feat_stream, buf, n);
+    if (!f) return -1;
+    return vfs_stream_read((vfs_stream_t *)f, buf, n);
 }
 static int feat_file_seek(void *f, uint32_t off) {
-    (void)f;
-    return vfs_stream_seek(&g_feat_stream, off);
+    if (!f) return -1;
+    return vfs_stream_seek((vfs_stream_t *)f, off);
 }
 static void feat_file_close(void *f) {
-    (void)f;
-    vfs_stream_close(&g_feat_stream);
+    for (int i = 0; i < MAX_FEAT_STREAMS; i++) {
+        if (g_feat_stream_used[i] && (!f || &g_feat_streams[i] == f)) {
+            vfs_stream_close(&g_feat_streams[i]);
+            g_feat_stream_used[i] = false;
+        }
+    }
+}
+static void feat_register_bg_tick(void (*tick)(void)) {
+    g_bg_tick = tick;
+    g_bg_r9 = g_curr_feat_r9;
+    if (tick) {
+        g_bg_run = g_curr_run;
+        g_bg_src = g_feat_src;
+        if (g_feat_modpath) {
+            str_lcpy(g_bg_modpath, sizeof(g_bg_modpath), g_feat_modpath);
+        }
+    } else {
+        g_bg_run = NULL;
+        g_bg_src = NULL;
+        g_bg_modpath[0] = '\0';
+    }
 }
 
 static void feat_list_dir(const char *dirpath,
@@ -285,16 +305,6 @@ static bool feat_pick_file(const char *ext, char *out, int cap, uint32_t *out_si
     return false;
 }
 
-/* Themed chrome a feature app draws each frame so it matches the active theme. A
- * feature launches over a <320-wide menu, so the core's app-mode header/footer fill
- * is otherwise skipped -- route through the forced-solid core renderers so the core
- * and modules share ONE chrome path (no re-implemented bar fills here). */
-static void feat_draw_header(const char *title) {
-    ui_draw_header_solid(title);
-}
-static void feat_draw_footer(const char *hint) {
-    ui_draw_footer_chrome(hint);
-}
 
 /* Loader module registry, surfaced to the Module Overview diagnostic (a PIE module can't read the
  * core global g_mod_recs directly). */
@@ -330,6 +340,7 @@ static void feat_run_view(const ui_view_desc_t *desc) {
     g_view_done = 0;
     while (!g_view_done) {
         input_update();
+        feature_bg_tick();
         ui_list_update(&list);
         if (g_view_done) break;   /* on_back fired this frame */
 
@@ -348,6 +359,11 @@ static void feat_run_view(const ui_view_desc_t *desc) {
     }
 }
 
+static void feat_host_input_update(void) {
+    input_update();
+    feature_bg_tick();
+}
+
 static feature_host_t g_feature_host = {
     .get_tick      = HAL_GetTick,
     .framebuffer   = gui_current_framebuffer,
@@ -355,7 +371,7 @@ static feature_host_t g_feature_host = {
     .fill_rect     = gui_draw_fill_rect,
     .progress_bar  = gui_draw_progress_bar,
     .present       = gui_refresh,
-    .input_update  = input_update,
+    .input_update  = feat_host_input_update,
     .just_pressed  = feat_just_pressed,
     .is_pressed    = feat_is_pressed,
     .ui            = NULL,   /* set in feat_run (mod_ui() isn't a constant) */
@@ -366,8 +382,8 @@ static feature_host_t g_feature_host = {
     .list_dir      = feat_list_dir,
     .pick_file     = feat_pick_file,
     .gui           = NULL,   /* set in feat_run (gui_api() isn't a constant) */
-    .draw_header   = feat_draw_header,
-    .draw_footer   = feat_draw_footer,
+    .draw_header   = ui_draw_header_solid,
+    .draw_footer   = ui_draw_footer_chrome,
     .state_save    = feat_state_save,
     .state_load    = feat_state_load,
     .source_id     = feat_source_id,
@@ -379,36 +395,78 @@ static feature_host_t g_feature_host = {
     .mod_get       = feat_mod_get,
     .run_view      = feat_run_view,
     .pane_row      = ui_list_pane_row,
+    .register_bg_tick = feat_register_bg_tick,
 };
 
 /* Map the loader's failure class to a user-facing message, so a transient launch that
  * fails shows WHY instead of silently doing nothing. */
 static const char *feat_load_err_msg(void) {
-    switch (mod_load_last_error()) {
-        case MOD_ERR_READ:  return "Module read failed";
-        case MOD_ERR_ABI:   return "Module version mismatch";
-        case MOD_ERR_NOMEM: return "Out of module memory";
-        default:            return "Module launch failed";
-    }
+    static const char *msgs[] = {
+        "Module launch failed",
+        "Module read failed",
+        "Module version mismatch",
+        "Out of module memory"
+    };
+    int err = mod_load_last_error();
+    if (err < 0 || err > 3) err = 0;
+    return msgs[err];
 }
 
-/* Transiently load the module at `modpath`, run it (blocks), reclaim the slot. `src` is the
- * partition `file` lives on (for the host file API), or NULL for a menu launch. */
 static void feat_run(const char *modpath, const char *file, const partition_info_t *src) {
     g_feature_host.ui  = mod_ui();
     g_feature_host.gui = gui_api();
     g_feat_src = src;
-    g_feat_modpath = modpath;   /* for the per-module state file */
-    uint32_t mark = mod_pool_mark();
-    feature_api_t api = {0};
-    if (mod_load_feature(modpath, &g_feature_host, &api) && api.run)
-        mod_invoke_r9(&g_feature_host, file, (void *)api.run);   /* r9 set for an r9-pic feature's run */
-    else
-        ui_show_error(feat_load_err_msg());   /* no more silent failure */
-    mod_pool_reset(mark);
-    feat_file_close(NULL);   /* close the stream if the module forgot to */
-    g_feat_src = NULL;
     g_feat_ran = 1;          /* a feature has now run this boot (next launch isn't "first") */
+    g_feat_modpath = modpath;   /* for the per-module state file */
+
+    bool is_bg_reentry = (g_bg_tick && g_bg_run && modpath && strcmp(modpath, g_bg_modpath) == 0);
+    uint32_t mark = 0;
+    void *run_fn = NULL;
+
+    if (is_bg_reentry) {
+        run_fn = (void *)g_bg_run;
+        g_mod_r9 = g_bg_r9;
+    } else {
+        mark = mod_pool_mark();
+        feature_api_t api = {0};
+        if (mod_load_feature(modpath, &g_feature_host, &api) && api.run) {
+            run_fn = (void *)api.run;
+        } else {
+            ui_show_error(feat_load_err_msg());   /* no more silent failure */
+        }
+    }
+
+    if (run_fn) {
+        g_curr_run = (void (*)(const feature_host_t *, const char *))run_fn;
+        g_curr_feat_r9 = g_mod_r9;
+        mod_invoke_r9(&g_feature_host, file, run_fn);
+    }
+
+    if (!g_bg_tick) {
+        mod_pool_reset(is_bg_reentry ? g_bg_pool_mark : mark);
+        feat_file_close(NULL);   /* close the stream if the module forgot to */
+    } else if (!is_bg_reentry) {
+        g_bg_pool_mark = mark;
+    }
+    g_feat_src = NULL;
+}
+
+void feature_bg_tick(void) {
+    if (g_bg_tick) {
+        const partition_info_t *saved_src = g_feat_src;
+        const char *saved_modpath = g_feat_modpath;
+        g_feat_src = g_bg_src;
+        g_feat_modpath = g_bg_modpath;
+
+        call_feat_r9(NULL, NULL, (void *)g_bg_tick, g_bg_r9);
+
+        g_feat_src = saved_src;
+        g_feat_modpath = saved_modpath;
+    }
+}
+
+bool feature_is_bg_active(void) {
+    return g_bg_tick != NULL;
 }
 
 void feature_launch(int menu_id, int n) {

@@ -498,39 +498,92 @@ static int state_deserialize(uint32_t len, int *cur, uint32_t *byte_pos, int *pa
 /* Unified player: idle (empty/stopped), playback, button bar, seek scrubber, and the
  * playlist pop-up (Add/Play/Remove) in one loop, so the queue can grow from empty. `initial`
  * is the launching file (NULL = Tools launch -> start empty; user builds the list via Add). */
+static int cur = 0;
+static int loaded = -1, paused = 0, sel = BTN_PLAY, seek_mode = 0, seek_pct = 0;
+static int last_half = -1, drained = 0;
+static int g_bg_active = 0;
+
+static void mp3_bg_tick(void) {
+    if (g_bg_active && loaded >= 0 && !paused) {
+        int action = ACT_END;
+        if (feed(paused, &last_half, &drained, &action)) {
+            cur = (g_qn > 0) ? (cur + 1) % g_qn : 0;
+            if (g_qn > 0 && load_track(g_h, cur, 0, 0)) {
+                loaded = cur;
+                last_half = -1;
+                drained = 0;
+            } else {
+                audio_stop();
+                if (g_fp) { g_h->file_close(g_fp); g_fp = NULL; }
+                loaded = -1;
+                g_bg_active = 0;
+                g_h->register_bg_tick(NULL);
+            }
+        }
+    }
+}
+
 static void player(const feature_host_t *h, const char *initial) {
-    if (initial) { const char *base; split_path(initial, g_dir, sizeof(g_dir), &base); (void)base; }
-    else         g_dir[0] = 0;
-    g_qn = 0;
-    if (initial && h->list_dir) h->list_dir(g_dir[0] ? g_dir : "/", q_add, 0);
-    q_sort();
-    int cur = 0;
-    if (initial) {
-        for (int i = 0; i < g_qn; i++)
-            if (!ci_less(g_qname[i], initial) && !ci_less(initial, g_qname[i])) { cur = i; break; }
-        if (g_qn == 0) q_add_full(initial, 0);
-    }
+    g_h = h;
+    if (g_bg_active) {
+        g_bg_active = 0;
+        h->register_bg_tick(NULL);
+        if (initial) {
+            char dir_temp[256];
+            const char *base;
+            split_path(initial, dir_temp, sizeof(dir_temp), &base);
+            (void)base;
+            if (strcmp(g_dir, dir_temp) != 0) {
+                strcpy(g_dir, dir_temp);
+                g_qn = 0;
+                if (h->list_dir) h->list_dir(g_dir[0] ? g_dir : "/", q_add, 0);
+                q_sort();
+            }
+            cur = 0;
+            for (int i = 0; i < g_qn; i++)
+                if (!ci_less(g_qname[i], initial) && !ci_less(initial, g_qname[i])) { cur = i; break; }
+            if (g_qn == 0) q_add_full(initial, 0);
 
-    g_pl_open = 0;
-    int loaded = -1, paused = 0, sel = BTN_PLAY, seek_mode = 0, seek_pct = 0;
-    int last_half = -1, drained = 0;
+            paused = 0;
+            seek_mode = 0;
+            loaded = load_track(h, cur, 0, 0) ? cur : -1;
+            last_half = -1;
+            drained = 0;
+        }
+    } else {
+        if (initial) { const char *base; split_path(initial, g_dir, sizeof(g_dir), &base); (void)base; }
+        else         g_dir[0] = 0;
+        g_qn = 0;
+        if (initial && h->list_dir) h->list_dir(g_dir[0] ? g_dir : "/", q_add, 0);
+        q_sort();
+        cur = 0;
+        if (initial) {
+            for (int i = 0; i < g_qn; i++)
+                if (!ci_less(g_qname[i], initial) && !ci_less(initial, g_qname[i])) { cur = i; break; }
+            if (g_qn == 0) q_add_full(initial, 0);
+        }
 
-    /* Tools launch (no file): restore the saved playlist + position, if any. */
-    uint32_t resume_pos = 0, resume_src = 0; int resume_paused = 0, have_resume = 0;
-    if (!initial && h->state_load) {
-        int got = h->state_load(g_in, IN_CAP);
-        if (got > 0) have_resume = state_deserialize((uint32_t)got, &cur, &resume_pos, &resume_paused, &resume_src);
-    }
-    /* Re-select the source partition BEFORE loading, so the stored paths resolve. */
-    if (have_resume && resume_src && h->set_source) h->set_source(resume_src);
+        g_pl_open = 0;
+        loaded = -1; paused = 0; sel = BTN_PLAY; seek_mode = 0; seek_pct = 0;
+        last_half = -1; drained = 0;
 
-    /* Cold boot (first feature launch since power-on): come up PAUSED, don't auto-play (but
-     * still restore the position). Same-session re-entry: restore the saved play/pause. */
-    int first = (h->is_first_launch && h->is_first_launch());
-    int start_paused = have_resume && first;
-    if (g_qn > 0 && load_track(h, cur, have_resume ? resume_pos : 0, start_paused)) {
-        loaded = cur;
-        paused = have_resume ? (first ? 1 : resume_paused) : 0;
+        /* Tools launch (no file): restore the saved playlist + position, if any. */
+        uint32_t resume_pos = 0, resume_src = 0; int resume_paused = 0, have_resume = 0;
+        if (!initial && h->state_load) {
+            int got = h->state_load(g_in, IN_CAP);
+            if (got > 0) have_resume = state_deserialize((uint32_t)got, &cur, &resume_pos, &resume_paused, &resume_src);
+        }
+        /* Re-select the source partition BEFORE loading, so the stored paths resolve. */
+        if (have_resume && resume_src && h->set_source) h->set_source(resume_src);
+
+        /* Cold boot (first feature launch since power-on): come up PAUSED, don't auto-play (but
+         * still restore the position). Same-session re-entry: restore the saved play/pause. */
+        int first = (h->is_first_launch && h->is_first_launch());
+        int start_paused = have_resume && first;
+        if (g_qn > 0 && load_track(h, cur, have_resume ? resume_pos : 0, start_paused)) {
+            loaded = cur;
+            paused = have_resume ? (first ? 1 : resume_paused) : 0;
+        }
     }
 
     while (1) {
@@ -653,7 +706,14 @@ static void player(const feature_host_t *h, const char *initial) {
         h->state_save(g_in, len);
     }
 
-    if (g_fp) { audio_stop(); h->file_close(g_fp); g_fp = 0; }
+    if (loaded >= 0 && !paused) {
+        g_bg_active = 1;
+        h->register_bg_tick(mp3_bg_tick);
+    } else {
+        g_bg_active = 0;
+        h->register_bg_tick(NULL);
+        if (g_fp) { audio_stop(); h->file_close(g_fp); g_fp = 0; }
+    }
 }
 
 static void run(const feature_host_t *h, const char *path) {

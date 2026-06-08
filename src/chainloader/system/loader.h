@@ -37,6 +37,8 @@ int mod_load_last_error(void);
  * module). The core uses this for every entry into an r9-pic module: its init_module and its
  * feature_api.run. */
 void mod_invoke_r9(const void *a0, const void *a1, void *fn);
+void call_feat_r9(const void *a0, const void *a1, void *fn, uint32_t r9base);
+extern uint32_t g_mod_r9;
 
 /* Loader-filled module registry, read by the Module Overview view (ui/module_overview.c).
  * One entry per distinct loaded module (deduped by path, latest load wins). */

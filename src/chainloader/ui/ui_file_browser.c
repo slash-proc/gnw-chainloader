@@ -127,7 +127,7 @@ static void fs_display_name(const partition_info_t *p, char *buf, int cap) {
     const char *fs = partition_fs_code(p);
     if (!fs) { str_lcpy(buf, cap, p->type); return; }
     const char *loc = fs_loc_prefix(p);
-    int idx = 0, n = partition_get_count();
+    int idx = 1, n = partition_get_count();
     for (int i = 0; i < n; i++) {
         partition_info_t *q = partition_get_info(i);
         if (q == p) break;
@@ -137,10 +137,9 @@ static void fs_display_name(const partition_info_t *p, char *buf, int cap) {
     str_lcpy(buf, cap, loc);
     str_lcat(buf, cap, "-");
     str_lcat(buf, cap, fs);
-    str_lcat(buf, cap, "-");
+    str_lcat(buf, cap, idx < 10 ? "-0" : "-");
     char ib[8];
-    int_to_str(idx + 1, ib);
-    if (ib[1] == '\0') str_lcat(buf, cap, "0");   /* zero-pad to 2 digits */
+    int_to_str(idx, ib);
     str_lcat(buf, cap, ib);
 }
 
@@ -229,7 +228,7 @@ static int name_cmp_ci(const char *a, const char *b) {
  * Shared by every filesystem (FatFS readdir is otherwise unordered). */
 static void sort_file_entries(void) {
     /* Sort the index only; names stay put in the pool (offsets reorder). */
-    int start = (file_count > 0 && strcmp(fb_name(0), PARENT_DIR_DOTS) == 0) ? 1 : 0;
+    int start = (file_count > 0 && fb_name(0)[0] == '.' && fb_name(0)[1] == '.' && fb_name(0)[2] == '\0') ? 1 : 0;
     for (int i = start; i < file_count - 1; i++) {
         for (int j = start; j < file_count - 1 - (i - start); j++) {
             if (name_cmp_ci(fb_name(j), fb_name(j + 1)) > 0) {
@@ -246,7 +245,7 @@ static void scan_files(void) {
     fb_pool_used = 0;
     if (!active_partition) return;
 
-    if (strcmp(current_path, "/") != 0 && current_path[0] != '\0') {
+    if (!(current_path[0] == '/' && current_path[1] == '\0') && current_path[0] != '\0') {
         add_entry_raw(PARENT_DIR_DOTS, BROWSER_TYPE_DIR, 0);  /* parent-nav, bypasses dot-filter */
     }
 
@@ -327,7 +326,7 @@ static void fs_list_draw_right_pane(int selected_idx, uint32_t selected_tick) {
 
 static void on_file_action(int idx) {
     if (idx >= 0 && idx < file_count) {
-        if (strcmp(fb_name(idx), PARENT_DIR_DOTS) == 0) {
+        if (fb_name(idx)[0] == '.' && fb_name(idx)[1] == '.' && fb_name(idx)[2] == '\0') {
             menu_browser_back();
             return;
         }
@@ -389,60 +388,40 @@ static void build_fs_list(void) {
                 fs_is_rw[fs_partition_count] = false;
                 fs_space_valid[fs_partition_count] = false;
                 
+                vfs_driver_t *drv = NULL;
                 if (t0 == 'L') {
-                    // Check if lfs_rw.bin exists on this partition by temporarily mounting it RO
-                    vfs_driver_t *ro_drv = vfs_get_driver("LFS");
-                    if (ro_drv && ro_drv->mount(p->address, p->size) == 0) {
-                        void *f = NULL;
-                        if (ro_drv->open("/fs/lfs.bin", 1, &f) == 0) {
-                            ro_drv->close(f);
-                            fs_is_rw[fs_partition_count] = true;
-                        }
-                        
-                        // Query space
-                        uint32_t tot = 0, fre = 0;
-                        if (ro_drv->statfs && ro_drv->statfs(&tot, &fre) == 0) {
-                            fs_total_space[fs_partition_count] = tot;
-                            fs_used_space[fs_partition_count] = tot - fre;
-                            fs_free_space[fs_partition_count] = fre;
-                            fs_space_valid[fs_partition_count] = true;
-                        }
-
-                        ro_drv->unmount();
-                    }
-                } else if (t0 == 'F' && t1 == 'r') {
-                    // FrogFS space query (read directly from flash header)
-                    uint32_t magic = *(const uint32_t *)p->address;
-                    if (magic == 0x474F5246) { // "FROG"
-                        uint32_t bin_sz = *(const uint32_t *)((const uint8_t *)p->address + 8);
-                        /* Stored in 512-byte sectors to match the statfs contract. */
-                        fs_total_space[fs_partition_count] = p->size / 512;
-                        fs_used_space[fs_partition_count] = bin_sz / 512;
-                        fs_free_space[fs_partition_count] =
-                            (p->size > bin_sz ? (p->size - bin_sz) : 0) / 512;
-                        fs_space_valid[fs_partition_count] = true;
+                    drv = vfs_get_driver("LFS");
+                    if (drv && drv->mount(p->address, p->size) == 0) {
+                        fs_is_rw[fs_partition_count] = true;
                     }
                 } else if (t0 == 'F' && t1 == 'A') {
-                    /* The in-core FAT driver is RO (no write, no f_getfree). Load
-                     * the RW+exFAT module (fatfs.bin) now if it's reachable, so
-                     * MODE shows RW and f_getfree yields real Free/Used here in
-                     * the selector (not just after the tab is entered). */
-                    if (!vfs_is_fat_rw_loaded() &&
-                        vfs_module_available("/fs/fat.bin")) {
+                    if (!g_fat_rw_loaded && vfs_module_available("/fs/fat.bin")) {
                         vfs_load_dynamic_driver("FAT", "/fs/fat.bin");
                     }
-                    vfs_driver_t *fat_drv = vfs_get_driver("FAT");
-                    fs_is_rw[fs_partition_count] = (fat_drv && fat_drv->write != NULL);
-                    if (fat_drv && fat_drv->mount && fat_drv->mount(p->address, p->size) == 0) {
-                        uint32_t tot = 0, fre = 0;
-                        if (fat_drv->statfs && fat_drv->statfs(&tot, &fre) == 0) {
-                            fs_total_space[fs_partition_count] = tot;
-                            fs_used_space[fs_partition_count] = tot - fre;
-                            fs_free_space[fs_partition_count] = fre;
-                            fs_space_valid[fs_partition_count] = true;
-                        }
-                        if (fat_drv->unmount) fat_drv->unmount();
+                    drv = vfs_get_driver("FAT");
+                    fs_is_rw[fs_partition_count] = (drv && drv->write != NULL);
+                    if (drv && drv->mount && drv->mount(p->address, p->size) != 0) {
+                        drv = NULL;
                     }
+                } else if (t0 == 'F' && t1 == 'r') {
+                    if (*(const uint32_t *)p->address == 0x474F5246) {
+                        uint32_t bin_sz = *(const uint32_t *)((const uint8_t *)p->address + 8);
+                        fs_total_space[fs_partition_count] = p->size / 512;
+                        fs_used_space[fs_partition_count] = bin_sz / 512;
+                        fs_free_space[fs_partition_count] = (p->size > bin_sz ? (p->size - bin_sz) : 0) / 512;
+                        fs_space_valid[fs_partition_count] = true;
+                    }
+                }
+
+                if (drv) {
+                    uint32_t tot = 0, fre = 0;
+                    if (drv->statfs && drv->statfs(&tot, &fre) == 0) {
+                        fs_total_space[fs_partition_count] = tot;
+                        fs_used_space[fs_partition_count] = tot - fre;
+                        fs_free_space[fs_partition_count] = fre;
+                        fs_space_valid[fs_partition_count] = true;
+                    }
+                    if (drv->unmount) drv->unmount();
                 }
                 
                 fs_partitions[fs_partition_count++] = p;
@@ -666,7 +645,7 @@ static void menu_browser_update(ui_window_t *self) {
              * enumerates it; a file -> add it; ".." -> add the folder you're in). */
             int sel = g_list_browser.selected;
             if (g_fb_cfg.on_pick && sel >= 0 && sel < file_count) {
-                if (strcmp(fb_name(sel), PARENT_DIR_DOTS) == 0) {
+                if (fb_name(sel)[0] == '.' && fb_name(sel)[1] == '.' && fb_name(sel)[2] == '\0') {
                     g_fb_cfg.on_pick(current_path, true, 0);
                 } else {
                     char buf[512];
@@ -1003,7 +982,7 @@ static void file_context_menu_callback(int index) {
 
 static void open_file_context_menu(void) {
     int sel_idx = g_list_browser.selected;
-    bool is_parent_link = (sel_idx >= 0 && sel_idx < file_count && strcmp(fb_name(sel_idx), PARENT_DIR_DOTS) == 0);
+    bool is_parent_link = (sel_idx >= 0 && sel_idx < file_count && fb_name(sel_idx)[0] == '.' && fb_name(sel_idx)[1] == '.' && fb_name(sel_idx)[2] == '\0');
     g_file_opts_count = 0;
     bool is_rw = false;
     if (active_partition) {
