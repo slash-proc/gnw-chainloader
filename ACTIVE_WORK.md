@@ -11,8 +11,8 @@ This file tracks the active working session: the remaining checklist of **Overar
   *   **Requirements:**
       *   *Conflict Resolution UI:* Prompt the user (Replace, Skip, Apply-to-All) in `ui_file_browser.c` when a destination filename already exists during a paste operation, instead of blindly overwriting or failing.
       *   *Recursive Directory Merging:* Update the folder copy-paste logic in `fileops.c` to traverse and merge files folder-by-folder instead of failing directory creation if a directory already exists at the destination.
-- [x] **Goal 18: Introduce CI Pipeline**
-  *   **Status:** Completed and host-verified.
+- [ ] **Goal 18: Introduce CI Pipeline**
+  *   **Status:** In-progress (debugging CI syntax/pull errors in GitHub Actions).
   *   **Requirements:**
       *   *CI Pipeline:* GitHub Actions workflow to build/push Docker build image and compile/test firmware on push, PR, and tags.
 
@@ -21,7 +21,7 @@ This file tracks the active working session: the remaining checklist of **Overar
 ## Tasks
 
 ### Goal 18 - Introduce CI Pipeline
-- [x] **CI Configuration:** Create `.github/workflows/ci.yml` and verify the pipeline compiles and passes `make qa-host-only` on the host.
+- [ ] **CI Configuration:** Create `.github/workflows/ci.yml`, verify `make qa-host-only` passes, and fix/verify GitHub Actions execution logic.
 
 ### Goal 17 - Clean file-operation merges
 - [ ] **Conflict-resolution UI during copy-paste:** Implement overwrite/skip prompts and directory merging logic in the file browser when file name collisions occur during paste.

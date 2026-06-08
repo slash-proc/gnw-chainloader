@@ -102,12 +102,14 @@ jobs:
         if: steps.prep.outputs.docker_changed == 'false'
         run: |
           # Try to pull the current tag, or the major_minor version, or fallback to latest, then tag as local
-          docker pull slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }} && \
-            docker tag slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }} slashproc/gnw-chainloader-builder:local || \
-          docker pull slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }} && \
-            docker tag slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }} slashproc/gnw-chainloader-builder:local || \
-          docker pull slashproc/gnw-chainloader-builder:latest && \
+          if docker pull slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }}; then
+            docker tag slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.curr_tag }} slashproc/gnw-chainloader-builder:local
+          elif docker pull slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }}; then
+            docker tag slashproc/gnw-chainloader-builder:${{ steps.prep.outputs.major_minor_tag }} slashproc/gnw-chainloader-builder:local
+          else
+            docker pull slashproc/gnw-chainloader-builder:latest
             docker tag slashproc/gnw-chainloader-builder:latest slashproc/gnw-chainloader-builder:local
+          fi
 
       - name: Build Retro-Go & Generate CRC Header
         run: |
